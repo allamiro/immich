@@ -35,6 +35,7 @@
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+  import AssetMoveToAlbumModal from '$lib/modals/AssetMoveToAlbumModal.svelte';
   import { Route } from '$lib/route';
   import {
     getAlbumActions,
@@ -71,6 +72,7 @@
     mdiLink,
     mdiPlus,
     mdiPresentationPlay,
+    mdiTransferRight,
   } from '@mdi/js';
   import { onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -158,6 +160,15 @@
 
   const handleRemoveAssets = async (assetIds: string[]) => {
     timelineManager.removeAssets(assetIds);
+    await refreshAlbum();
+  };
+
+  const onAlbumRemoveAssets = async ({ assetIds, albumId }: { assetIds: string[]; albumId: string }) => {
+    if (albumId !== album.id) {
+      return;
+    }
+    timelineManager.removeAssets(assetIds);
+    assetMultiSelectManager.clear();
     await refreshAlbum();
   };
 
@@ -330,6 +341,7 @@
   onSharedLinkDelete={refreshAlbum}
   {onAlbumDelete}
   {onAlbumAddAssets}
+  {onAlbumRemoveAssets}
   {onAlbumShare}
   {onAlbumUserUpdate}
   onAlbumUserDelete={refreshAlbum}
@@ -490,6 +502,15 @@
           {/if}
 
           {#if isOwned || assetMultiSelectManager.isAllUserOwned}
+            <MenuOption
+              text={$t('move_to_album')}
+              icon={mdiTransferRight}
+              onClick={() =>
+                modalManager.show(AssetMoveToAlbumModal, {
+                  assetIds: assetMultiSelectManager.assets.map(({ id }) => id),
+                  sourceAlbum: album,
+                })}
+            />
             <RemoveFromAlbum menuItem bind:album onRemove={handleRemoveAssets} />
           {/if}
           {#if assetMultiSelectManager.isAllUserOwned}

@@ -5,6 +5,7 @@ import {
   AlbumUserRole,
   BulkIdErrorReason,
   deleteAlbum,
+  removeAssetFromAlbum,
   removeUserFromAlbum,
   updateAlbumInfo,
   updateAlbumUser,
@@ -15,14 +16,16 @@ import {
   type UserResponseDto,
 } from '@immich/sdk';
 import { modalManager, toastManager, type ActionItem } from '@immich/ui';
-import { mdiLink, mdiPlus, mdiPlusBoxOutline, mdiShareVariantOutline, mdiUpload } from '@mdi/js';
+import { mdiLink, mdiPlus, mdiPlusBoxOutline, mdiShareVariantOutline, mdiTransferRight, mdiUpload } from '@mdi/js';
 import { type MessageFormatter } from 'svelte-i18n';
 import { goto } from '$app/navigation';
+import { assetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
 import { authManager } from '$lib/managers/auth-manager.svelte';
 import { eventManager } from '$lib/managers/event-manager.svelte';
 import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
 import AlbumAddUsersModal from '$lib/modals/AlbumAddUsersModal.svelte';
 import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+import AssetMoveToAlbumModal from '$lib/modals/AssetMoveToAlbumModal.svelte';
 import SharedLinkCreateModal from '$lib/modals/SharedLinkCreateModal.svelte';
 import { Route } from '$lib/route';
 import { createAlbumAndRedirect } from '$lib/utils/album-utils';
@@ -90,6 +93,51 @@ export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponse
   };
 
   return { AddAssets, Upload };
+};
+
+export const getAlbumBulkActions = ($t: MessageFormatter, album: AlbumResponseDto) => {
+  const MoveToAlbum: ActionItem = {
+    title: $t('move_to_album'),
+    icon: mdiTransferRight,
+    onAction: () =>
+      modalManager.show(AssetMoveToAlbumModal, {
+        assetIds: assetMultiSelectManager.assets.map(({ id }) => id),
+        sourceAlbum: album,
+      }),
+  };
+
+  return { MoveToAlbum };
+};
+
+export const moveAssetsToAlbum = async (sourceAlbumId: string, destAlbumId: string, assetIds: string[]) => {
+  const $t = await getFormatter();
+
+  try {
+    const addResults = await addToAlbum({ ...authManager.params, id: destAlbumId, bulkIdsDto: { ids: assetIds } });
+
+    const idsToRemove = addResults
+      .filter(({ success, error }) => success || error === BulkIdErrorReason.Duplicate)
+      .map(({ id }) => id);
+
+    if (idsToRemove.length > 0) {
+      await removeAssetFromAlbum({ id: sourceAlbumId, bulkIdsDto: { ids: idsToRemove } });
+      eventManager.emit('AlbumRemoveAssets', { assetIds: idsToRemove, albumId: sourceAlbumId });
+    }
+
+    const movedCount = addResults.filter(({ success }) => success).length;
+    toastManager.primary(
+      {
+        description: $t('assets_moved_to_album_count', { values: { count: movedCount } }),
+        button: { label: $t('view_album'), onclick: () => goto(Route.viewAlbum({ id: destAlbumId })) },
+      },
+      { timeout: 5000 },
+    );
+
+    return true;
+  } catch (error) {
+    handleError(error, $t('errors.error_moving_assets_to_album'));
+    return false;
+  }
 };
 
 export const addAssetsToAlbums = async (albumIds: string[], assetIds: string[], { notify }: { notify: boolean }) => {

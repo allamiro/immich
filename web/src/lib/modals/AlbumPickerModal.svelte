@@ -23,12 +23,15 @@
 
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
+    excludedAlbumIds?: string[];
+    title?: string;
   };
 
-  let { onClose }: Props = $props();
+  let { onClose, excludedAlbumIds = [], title }: Props = $props();
 
   onMount(async () => {
-    albums = await getAllAlbums({});
+    const all = await getAllAlbums({});
+    albums = excludedAlbumIds.length > 0 ? all.filter(({ id }) => !excludedAlbumIds.includes(id)) : all;
     recentAlbums = [...albums].sort((a, b) => (new Date(a.updatedAt) > new Date(b.updatedAt) ? -1 : 1)).slice(0, 3);
     loading = false;
   });
@@ -147,7 +150,7 @@
   };
 </script>
 
-<Modal title={$t('add_to_album')} {onClose} size="small">
+<Modal title={title ?? $t('add_to_album')} {onClose} size="small">
   <ModalBody>
     <div class="mb-2 flex max-h-100 flex-col">
       {#if loading}
