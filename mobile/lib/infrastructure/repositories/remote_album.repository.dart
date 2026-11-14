@@ -213,6 +213,33 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     });
   }
 
+  Future<void> moveAssets(String sourceAlbumId, String targetAlbumId, List<String> assetIds) async {
+    if (assetIds.isEmpty) {
+      return;
+    }
+
+    final targetAlbumAssets = assetIds.map(
+      (assetId) => RemoteAlbumAssetEntityCompanion(albumId: Value(targetAlbumId), assetId: Value(assetId)),
+    );
+
+    await _db.transaction(() async {
+      await _db.batch((batch) {
+        for (final assetId in assetIds) {
+          batch.deleteWhere(
+            _db.remoteAlbumAssetEntity,
+            (row) => row.albumId.equals(sourceAlbumId) & row.assetId.equals(assetId),
+          );
+        }
+        batch.insertAll(_db.remoteAlbumAssetEntity, targetAlbumAssets, mode: InsertMode.insertOrIgnore);
+      });
+
+      final targetAlbum = _db.update(_db.remoteAlbumEntity)
+        ..where((row) => row.id.equals(targetAlbumId) & row.thumbnailAssetId.isNull());
+
+      await targetAlbum.write(RemoteAlbumEntityCompanion(thumbnailAssetId: Value(assetIds.first)));
+    });
+  }
+
   FutureOr<(DateTime, DateTime)> getDateRange(String albumId) {
     final query = _db.remoteAlbumAssetEntity.selectOnly()
       ..where(_db.remoteAlbumAssetEntity.albumId.equals(albumId))

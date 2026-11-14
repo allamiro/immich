@@ -184,6 +184,20 @@ class RemoteAlbumService {
     return album.added.length;
   }
 
+  Future<List<String>> moveAssets({
+    required String sourceAlbumId,
+    required String targetAlbumId,
+    required List<String> assetIds,
+  }) async {
+    final result = await _albumApiRepository.moveAssets(sourceAlbumId, targetAlbumId, assetIds);
+
+    if (result.moved.isNotEmpty) {
+      await _repository.moveAssets(sourceAlbumId, targetAlbumId, result.moved);
+    }
+
+    return result.moved;
+  }
+
   /// !TODO The name here is not clear as we have addAssets method above,
   /// which is only add remote assets to album, for the next PR, we will allow
   /// adding local assets from album from the timeline as well with this flow.

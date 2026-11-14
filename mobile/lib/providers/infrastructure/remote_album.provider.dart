@@ -209,6 +209,28 @@ class RemoteAlbumNotifier extends Notifier<RemoteAlbumState> {
     return added;
   }
 
+  Future<List<String>> moveAssets({
+    required String sourceAlbumId,
+    required String targetAlbumId,
+    required List<String> assetIds,
+  }) async {
+    try {
+      final movedIds = await _remoteAlbumService.moveAssets(
+        sourceAlbumId: sourceAlbumId,
+        targetAlbumId: targetAlbumId,
+        assetIds: assetIds,
+      );
+      if (movedIds.isNotEmpty) {
+        await _refreshAlbumInState(sourceAlbumId);
+        await _refreshAlbumInState(targetAlbumId);
+      }
+      return movedIds;
+    } catch (error, stack) {
+      _logger.severe('Failed to move assets from album $sourceAlbumId to album $targetAlbumId', error, stack);
+      rethrow;
+    }
+  }
+
   /// Links a freshly-uploaded local asset to an album using its new remote ID,
   /// upserting a placeholder remote asset row so the local DB join survives
   /// until the next sync catches up.
