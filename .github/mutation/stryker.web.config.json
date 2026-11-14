@@ -10,9 +10,9 @@
   "jsonReporter": {
     "fileName": "reports/mutation/mutation.json"
   },
-  "mutate": ["src/lib/services/album.service.ts"],
+  "mutate": ["src/lib/queries/album.query.ts"],
   "reporters": ["clear-text", "html", "json"],
-  "testFiles": ["src/lib/services/album.service.spec.ts"],
+  "testFiles": ["src/lib/queries/album.query.spec.ts"],
   "testRunner": "vitest",
   "thresholds": {
     "break": 60,

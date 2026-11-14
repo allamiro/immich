@@ -1,44 +1,69 @@
+# Mutation tests for the fork's "Move to album" feature. Fork Sync Upstream calls this workflow together
+# with Fork Regression after every merge; both must be green before a release is tagged or a build starts.
+#
+#   web     Stryker on moveAssetsToAlbumMutation and notifyMoveToAlbum in web/src/lib/queries/album.query.ts
+#   server  Stryker on moveAssets in server/src/services/album.service.ts
+#   mobile  Dart has no maintained mutation testing tool that parses the language. The pub.dev package
+#           mutation_test does regular expression replacements on line ranges: it counts mutants that no
+#           longer compile as detected and its line ranges move whenever upstream edits a file. The mobile
+#           job therefore runs the fork's own runner, .github/mutation/dart/run.py, with a fixed list of
+#           hand-written mutants in .github/mutation/dart/mutants.json. It covers the move chain only (API
+#           repository, service, local repository, notifier, action), not the rest of the app, and it
+#           finds no mutants on its own: new move code needs new entries in mutants.json. Each mutant is
+#           applied in a temporary copy of mobile/lib, so the checkout is never modified.
+#
+# The break thresholds live in .github/mutation/stryker.*.config.json and .github/mutation/dart/mutants.json.
+
 name: Fork Mutation Test
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: Which album service to mutate
+        description: Which part of the move feature to mutate
         type: choice
         options:
-          - both
+          - all
           - web
           - server
-        default: both
+          - mobile
+        default: all
       full:
-        description: Ignore the cached incremental results and run every mutant
+        description: Ignore the cached incremental Stryker results and run every mutant
         type: boolean
         default: false
+      ref:
+        description: Branch, tag or commit to test. Empty tests the branch the workflow is started from.
+        required: false
+        type: string
   workflow_call:
     inputs:
       target:
-        description: Which album service to mutate (web, server or both)
+        description: Which part of the move feature to mutate (all, web, server or mobile)
         type: string
-        default: both
+        default: all
       full:
-        description: Ignore the cached incremental results and run every mutant
+        description: Ignore the cached incremental Stryker results and run every mutant
         type: boolean
         default: false
+      ref:
+        description: Branch, tag or commit to test. Empty tests the ref of the calling workflow.
+        required: false
+        type: string
   pull_request:
     paths:
-      - 'web/src/lib/services/album.service.ts'
-      - 'web/src/lib/services/album.service.spec.ts'
-      - 'web/src/lib/modals/AssetMoveToAlbumModal.svelte'
-      - 'web/src/lib/modals/AlbumPickerModal.svelte'
+      - 'web/src/lib/queries/album.query.ts'
+      - 'web/src/lib/queries/album.query.spec.ts'
       - 'server/src/services/album.service.ts'
       - 'server/src/services/album.service.spec.ts'
+      - 'mobile/lib/**/*album*'
+      - 'mobile/test/**/*album*'
       - '.github/mutation/**'
       - '.github/workflows/fork-mutation-test.yml'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.target || 'both' }}
-  cancel-in-progress: true
+  group: fork-mutation-test-${{ inputs.ref || github.ref }}-${{ inputs.target || 'all' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
 
@@ -57,29 +82,41 @@ jobs:
     permissions: {}
     outputs:
       targets: ${{ steps.select.outputs.targets }}
+      mobile: ${{ steps.select.outputs.mobile }}
     steps:
       - name: Select the requested targets
         id: select
         env:
-          REQUESTED_TARGET: ${{ inputs.target || 'both' }}
-          WEB_TARGET: '{"target":"web","directory":"web","functions":"moveAssetsToAlbum","setup-tasks":"//:sdk:install //:sdk:build //web:install //web:playwright-install"}'
+          REQUESTED_TARGET: ${{ inputs.target || 'all' }}
+          WEB_TARGET: '{"target":"web","directory":"web","functions":"moveAssetsToAlbumMutation notifyMoveToAlbum","setup-tasks":"//:sdk:install //:sdk:build //web:install //web:playwright-install"}'
           SERVER_TARGET: '{"target":"server","directory":"server","functions":"moveAssets","setup-tasks":"//server:install //:plugins"}'
         run: |
+          mobile=false
           case "$REQUESTED_TARGET" in
-            both) targets="[${WEB_TARGET},${SERVER_TARGET}]" ;;
+            all)
+              targets="[${WEB_TARGET},${SERVER_TARGET}]"
+              mobile=true
+              ;;
             web) targets="[${WEB_TARGET}]" ;;
             server) targets="[${SERVER_TARGET}]" ;;
+            mobile)
+              targets='[]'
+              mobile=true
+              ;;
             *)
-              echo "::error::target must be web, server or both, got '${REQUESTED_TARGET}'."
+              echo "::error::target must be all, web, server or mobile, got '${REQUESTED_TARGET}'."
               exit 1
               ;;
           esac
-          echo "targets=${targets}" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "targets=${targets}"
+            echo "mobile=${mobile}"
+          } | tee -a "$GITHUB_OUTPUT"
 
   mutation-test:
     name: Mutation test ${{ matrix.target }}
     needs: select-targets
-    if: ${{ github.repository_owner != 'immich-app' }}
+    if: ${{ github.repository_owner != 'immich-app' && needs.select-targets.outputs.targets != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -97,6 +134,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Resolve the mutation scope
@@ -118,16 +156,31 @@ jobs:
             if ! line_range=$(awk -v name="$function_name" '
               !first_line && $0 ~ "^[ \t]*(export[ \t]+)?((const|async|function)[ \t]+)+" name "[ \t]*[=(<]" {
                 first_line = NR
+                last_line = NR
                 match($0, /^[ \t]*/)
-                indentation = substr($0, 1, RLENGTH)
+                indentation = RLENGTH
                 next
               }
-              first_line && ($0 == indentation "}" || $0 == indentation "};") {
-                print first_line "-" NR
-                closed = 1
-                exit
+              first_line && !closed && $0 !~ /^[ \t]*$/ {
+                match($0, /^[ \t]*/)
+                rest = substr($0, RLENGTH + 1)
+                if (RLENGTH == indentation && rest ~ /^[]})]+;?$/) {
+                  last_line = NR
+                  closed = 1
+                  exit
+                }
+                if (RLENGTH <= indentation && rest !~ /^[]})]/) {
+                  closed = 1
+                  exit
+                }
+                last_line = NR
               }
-              END { exit closed ? 0 : 1 }
+              END {
+                if (!first_line) {
+                  exit 1
+                }
+                print first_line "-" last_line
+              }
             ' "$mutated_file"); then
               echo "::error::${function_name} was not found in ${TARGET_DIRECTORY}/${mutated_file}."
               exit 1
@@ -238,3 +291,69 @@ jobs:
         with:
           path: ${{ env.INCREMENTAL_FILE }}
           key: fork-mutation-test-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  mutation-test-mobile:
+    name: Mutation test mobile
+    needs: select-targets
+    if: ${{ github.repository_owner != 'immich-app' && needs.select-targets.outputs.mobile == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check the mutant definitions still match the move code
+        run: python3 .github/mutation/dart/run.py --mobile-dir mobile --list
+
+      - name: Restore Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: fork-mobile-rust-${{ runner.os }}-${{ hashFiles('native/crates/native_core_ffi/rust-toolchain.toml', 'mobile/mise.lock', 'native/Cargo.lock') }}
+          restore-keys: |
+            fork-mobile-rust-${{ runner.os }}-
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./mobile
+
+      - name: Install dependencies
+        run: mise run //mobile:install:ci
+
+      - name: Generate code and translations
+        run: mise run //mobile:codegen
+
+      - name: Run the mutants
+        run: python3 .github/mutation/dart/run.py --mobile-dir mobile --report-dir "${RUNNER_TEMP}/mutation-report-mobile"
+
+      - name: Summarize the mutation score
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -f "${RUNNER_TEMP}/mutation-report-mobile/mutation.md" ]]; then
+            cat "${RUNNER_TEMP}/mutation-report-mobile/mutation.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Mutation test: mobile"
+              echo
+              echo "The runner did not produce a report. See the job log: the tests failed without a mutation or a mutant definition no longer matches the source."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the mutation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mutation-report-mobile
+          path: ${{ runner.temp }}/mutation-report-mobile
+          if-no-files-found: warn
