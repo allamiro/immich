@@ -24,7 +24,16 @@ defaults:
 jobs:
   resolve-source:
     name: Resolve source and tags
-    if: ${{ github.repository_owner != 'immich-app' }}
+    if: >-
+      ${{
+        github.repository_owner != 'immich-app' &&
+        !(
+          github.event_name == 'push' &&
+          github.ref_type == 'branch' &&
+          github.event.head_commit.author.name == 'github-actions[bot]' &&
+          startsWith(github.event.head_commit.message, 'chore: merge upstream ')
+        )
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
