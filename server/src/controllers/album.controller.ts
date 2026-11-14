@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { Endpoint, HistoryBuilder } from 'src/decorators';
 import {
   AddUsersDto,
+  AlbumMoveAssetsDto,
   AlbumResponseDto,
   AlbumsAddAssetsDto,
   AlbumsAddAssetsResponseDto,
@@ -148,6 +149,22 @@ export class AlbumController {
     @Param() { id }: UUIDParamDto,
   ): Promise<BulkIdResponseDto[]> {
     return this.service.removeAssets(auth, id, dto);
+  }
+
+  @Put(':id/assets/move')
+  @Authenticated({ permission: Permission.AlbumAssetDelete })
+  @Endpoint({
+    summary: 'Move assets to another album',
+    description:
+      'Move multiple assets from a specific album by its ID to another album. The assets are added to the target album and removed from the source album in a single transaction. Requires the albumAsset.create permission in addition to albumAsset.delete.',
+    history: new HistoryBuilder().added('v3'),
+  })
+  moveAssetsToAlbum(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Body() dto: AlbumMoveAssetsDto,
+  ): Promise<BulkIdResponseDto[]> {
+    return this.service.moveAssets(auth, id, dto);
   }
 
   @Put(':id/users')

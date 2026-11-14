@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import {
   AddUsersDto,
+  AlbumMoveAssetsDto,
   AlbumResponseDto,
   AlbumsAddAssetsDto,
   AlbumsAddAssetsResponseDto,
@@ -17,6 +18,7 @@ import { MapMarkerResponseDto } from 'src/dtos/map.dto';
 import { AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
+import { isGranted } from 'src/utils/access';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { asDateTimeString } from 'src/utils/date';
 import { getPreferences } from 'src/utils/preferences';
@@ -276,6 +278,80 @@ export class AlbumService extends BaseService {
 
     const removedIds = results.filter(({ success }) => success).map(({ id }) => id);
     if (removedIds.length > 0 && album.albumThumbnailAssetId && removedIds.includes(album.albumThumbnailAssetId)) {
+      await this.albumRepository.updateThumbnails();
+    }
+
+    return results;
+  }
+
+  async moveAssets(auth: AuthDto, id: string, dto: AlbumMoveAssetsDto): Promise<BulkIdResponseDto[]> {
+    const { targetAlbumId, assetIds } = dto;
+    if (id === targetAlbumId) {
+      throw new BadRequestException('Cannot move assets to the same album');
+    }
+
+    if (auth.apiKey && !isGranted({ requested: [Permission.AlbumAssetCreate], current: auth.apiKey.permissions })) {
+      throw new ForbiddenException(`Missing required permission: ${Permission.AlbumAssetCreate}`);
+    }
+
+    await this.requireAccess({ auth, permission: Permission.AlbumAssetDelete, ids: [id] });
+    await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [targetAlbumId] });
+
+    const sourceAlbum = await this.findOrFail(id, auth.user.id, { withAssets: false });
+    const targetAlbum = await this.findOrFail(targetAlbumId, auth.user.id, { withAssets: false });
+
+    const canAlwaysRemove = await this.checkAccess({ auth, permission: Permission.AlbumDelete, ids: [id] });
+    const sourceAssetIds = await this.albumRepository.getAssetIds(id, assetIds);
+    const targetAssetIds = await this.albumRepository.getAssetIds(targetAlbumId, [...sourceAssetIds]);
+    const shareableAssetIds = await this.checkAccess({ auth, permission: Permission.AssetShare, ids: sourceAssetIds });
+
+    const results: BulkIdResponseDto[] = [];
+    for (const assetId of assetIds) {
+      const hasAsset = sourceAssetIds.has(assetId);
+      if (!hasAsset) {
+        results.push({ id: assetId, success: false, error: BulkIdErrorReason.NOT_FOUND });
+        continue;
+      }
+
+      const hasAccess = shareableAssetIds.has(assetId) || (canAlwaysRemove.has(id) && targetAssetIds.has(assetId));
+      if (!hasAccess) {
+        results.push({ id: assetId, success: false, error: BulkIdErrorReason.NO_PERMISSION });
+        continue;
+      }
+
+      sourceAssetIds.delete(assetId);
+      results.push({ id: assetId, success: true });
+    }
+
+    const movedIds = results.filter(({ success }) => success).map(({ id }) => id);
+    if (movedIds.length === 0) {
+      return results;
+    }
+
+    await this.albumRepository.moveAssetIds(id, targetAlbumId, movedIds);
+
+    const firstNewAssetId = movedIds.find((assetId) => !targetAssetIds.has(assetId));
+    if (firstNewAssetId) {
+      await this.albumRepository.update(
+        targetAlbumId,
+        {
+          id: targetAlbumId,
+          updatedAt: new Date(),
+          albumThumbnailAssetId: targetAlbum.albumThumbnailAssetId ?? firstNewAssetId,
+        },
+        auth.user.id,
+      );
+
+      const allUsersExceptUs = targetAlbum.albumUsers
+        .map(({ user }) => user.id)
+        .filter((userId) => userId !== auth.user.id);
+
+      for (const recipientId of allUsersExceptUs) {
+        await this.eventRepository.emit('AlbumUpdate', { id: targetAlbumId, recipientId });
+      }
+    }
+
+    if (sourceAlbum.albumThumbnailAssetId && movedIds.includes(sourceAlbum.albumThumbnailAssetId)) {
       await this.albumRepository.updateThumbnails();
     }
 

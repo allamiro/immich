@@ -53,6 +53,13 @@ const AlbumsAddAssetsResponseSchema = z
   })
   .meta({ id: 'AlbumsAddAssetsResponseDto' });
 
+const AlbumMoveAssetsSchema = z
+  .object({
+    targetAlbumId: z.uuidv4().describe('Target album ID'),
+    assetIds: z.array(z.uuidv4()).describe('Asset IDs'),
+  })
+  .meta({ id: 'AlbumMoveAssetsDto' });
+
 const UpdateAlbumSchema = z
   .object({
     albumName: z.string().optional().describe('Album name'),
@@ -145,6 +152,7 @@ export class AlbumUserCreateDto extends createZodDto(AlbumUserCreateSchema) {}
 export class CreateAlbumDto extends createZodDto(CreateAlbumSchema) {}
 export class AlbumsAddAssetsDto extends createZodDto(AlbumsAddAssetsSchema) {}
 export class AlbumsAddAssetsResponseDto extends createZodDto(AlbumsAddAssetsResponseSchema) {}
+export class AlbumMoveAssetsDto extends createZodDto(AlbumMoveAssetsSchema) {}
 export class UpdateAlbumDto extends createZodDto(UpdateAlbumSchema) {}
 export class GetAlbumsDto extends createZodDto(GetAlbumsSchema) {}
 export class AlbumStatisticsResponseDto extends createZodDto(AlbumStatisticsResponseSchema) {}

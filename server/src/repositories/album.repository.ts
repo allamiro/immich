@@ -18,7 +18,7 @@ import { AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { asUuid, dummy, withDefaultVisibility } from 'src/utils/database';
+import { anyUuid, asUuid, dummy, withDefaultVisibility } from 'src/utils/database';
 
 export interface AlbumAssetCount {
   albumId: string;
@@ -299,6 +299,31 @@ export class AlbumRepository {
       )
       .onConflict((oc) => oc.doNothing())
       .execute();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID, [DummyValue.UUID]] })
+  async moveAssetIds(sourceAlbumId: string, targetAlbumId: string, assetIds: string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+
+    await this.db.transaction().execute(async (tx) => {
+      await tx
+        .insertInto('album_asset')
+        .expression((eb) =>
+          eb
+            .selectFrom(dummy)
+            .select([asUuid(targetAlbumId).as('albumId'), sql`unnest(${assetIds}::uuid[])`.as('assetId')]),
+        )
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+
+      await tx
+        .deleteFrom('album_asset')
+        .where('album_asset.albumId', '=', sourceAlbumId)
+        .where('album_asset.assetId', '=', anyUuid(assetIds))
+        .execute();
+    });
   }
 
   @GenerateSql({

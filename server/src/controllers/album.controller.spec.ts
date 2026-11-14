@@ -90,6 +90,29 @@ describe(AlbumController.name, () => {
     });
   });
 
+  describe('PUT /albums/:id/assets/move', () => {
+    it('should be an authenticated route', async () => {
+      await request(ctx.getHttpServer()).put(`/albums/${factory.uuid()}/assets/move`);
+      expect(ctx.authenticate).toHaveBeenCalled();
+    });
+
+    it('should require a valid target album id', async () => {
+      const { status, body } = await request(ctx.getHttpServer())
+        .put(`/albums/${factory.uuid()}/assets/move`)
+        .send({ targetAlbumId: 'invalid', assetIds: [factory.uuid()] });
+      expect(status).toEqual(400);
+      expect(body).toEqual(factory.responses.validationError([{ path: ['targetAlbumId'], message: 'Invalid UUID' }]));
+    });
+
+    it('should require valid asset ids', async () => {
+      const { status, body } = await request(ctx.getHttpServer())
+        .put(`/albums/${factory.uuid()}/assets/move`)
+        .send({ targetAlbumId: factory.uuid(), assetIds: ['invalid'] });
+      expect(status).toEqual(400);
+      expect(body).toEqual(factory.responses.validationError([{ path: ['assetIds', 0], message: 'Invalid UUID' }]));
+    });
+  });
+
   describe('PUT :id/users', () => {
     it('should be an authenticated route', async () => {
       await request(ctx.getHttpServer()).put(`/albums/${factory.uuid()}/users`);
