@@ -1,6 +1,6 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
-import { AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum.js';
+import { AlbumUserRole, AssetOrder, Permission, UserMetadataKey } from 'src/enum.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { AlbumUserFactory } from 'test/factories/album-user.factory.js';
 import { AlbumFactory } from 'test/factories/album.factory.js';
@@ -1458,6 +1458,287 @@ describe(AlbumService.name, () => {
       ]);
 
       expect(mocks.album.updateThumbnails).toHaveBeenCalled();
+    });
+  });
+
+  describe('moveAssets', () => {
+    it('should allow the owner to move assets', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().owner(owner).build();
+      const [asset1, asset2] = [AssetFactory.create(), AssetFactory.create()];
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset1.id, asset2.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset1.id, asset2.id])).mockResolvedValueOnce(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, {
+          targetAlbumId: target.id,
+          assetIds: [asset1.id, asset2.id],
+        }),
+      ).resolves.toEqual([
+        { success: true, id: asset1.id },
+        { success: true, id: asset2.id },
+      ]);
+
+      expect(mocks.album.moveAssetIds).toHaveBeenCalledWith(source.id, target.id, [asset1.id, asset2.id]);
+      expect(mocks.album.addAssetIds).not.toHaveBeenCalled();
+      expect(mocks.album.removeAssetIds).not.toHaveBeenCalled();
+      expect(mocks.album.update).toHaveBeenCalledExactlyOnceWith(
+        target.id,
+        {
+          id: target.id,
+          updatedAt: expect.any(Date),
+          albumThumbnailAssetId: asset1.id,
+        },
+        owner.id,
+      );
+      expect(mocks.album.updateThumbnails).not.toHaveBeenCalled();
+    });
+
+    it('should reset the source thumbnail and keep the target thumbnail', async () => {
+      const owner = UserFactory.create();
+      const [asset1, asset2] = [AssetFactory.create(), AssetFactory.create()];
+      const source = AlbumFactory.from({ albumThumbnailAssetId: asset1.id }).owner(owner).build();
+      const target = AlbumFactory.from({ albumThumbnailAssetId: asset2.id }).owner(owner).build();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset1.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset1.id])).mockResolvedValueOnce(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, { targetAlbumId: target.id, assetIds: [asset1.id] }),
+      ).resolves.toEqual([{ success: true, id: asset1.id }]);
+
+      expect(mocks.album.update).toHaveBeenCalledWith(
+        target.id,
+        {
+          id: target.id,
+          updatedAt: expect.any(Date),
+          albumThumbnailAssetId: asset2.id,
+        },
+        owner.id,
+      );
+      expect(mocks.album.updateThumbnails).toHaveBeenCalledTimes(1);
+    });
+
+    it('should notify the other users of the target album and refresh the source album', async () => {
+      const user = UserFactory.create();
+      const source = AlbumFactory.from().albumUser({ userId: user.id, role: AlbumUserRole.Editor }).build();
+      const target = AlbumFactory.from().albumUser({ userId: user.id, role: AlbumUserRole.Editor }).build();
+      const { user: targetOwner } = target.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const [asset1, asset2] = [AssetFactory.create(), AssetFactory.create()];
+      mocks.access.album.checkSharedAlbumAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset1.id, asset2.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset1.id, asset2.id])).mockResolvedValueOnce(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(user), source.id, {
+          targetAlbumId: target.id,
+          assetIds: [asset1.id, asset2.id],
+        }),
+      ).resolves.toEqual([
+        { success: true, id: asset1.id },
+        { success: true, id: asset2.id },
+      ]);
+
+      expect(mocks.album.moveAssetIds).toHaveBeenCalledWith(source.id, target.id, [asset1.id, asset2.id]);
+      expect(mocks.event.emit).toHaveBeenCalledTimes(2);
+      expect(mocks.event.emit).toHaveBeenCalledWith('AlbumUpdate', {
+        id: target.id,
+        userIds: target.albumUsers.map(({ user }) => user.id),
+        recipientIds: [targetOwner.id],
+      });
+      expect(mocks.event.emit).toHaveBeenCalledWith('AlbumUpdate', {
+        id: source.id,
+        userIds: source.albumUsers.map(({ user }) => user.id),
+        recipientIds: [],
+      });
+    });
+
+    it('should move assets that are already in the target album', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().albumUser({ userId: owner.id, role: AlbumUserRole.Editor }).build();
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) =>
+        Promise.resolve(new Set([...albumIds].filter((albumId) => albumId === source.id))),
+      );
+      mocks.access.album.checkSharedAlbumAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      const albumAssetIds: Record<string, string[]> = { [source.id]: [asset.id], [target.id]: [asset.id] };
+      mocks.album.getAssetIds.mockImplementation((albumId, assetIds) =>
+        Promise.resolve(new Set(assetIds.filter((assetId) => albumAssetIds[albumId]?.includes(assetId)))),
+      );
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
+      ).resolves.toEqual([{ success: true, id: asset.id }]);
+
+      expect(mocks.album.moveAssetIds).toHaveBeenCalledWith(source.id, target.id, [asset.id]);
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.event.emit).toHaveBeenCalledExactlyOnceWith('AlbumUpdate', {
+        id: source.id,
+        userIds: source.albumUsers.map(({ user }) => user.id),
+        recipientIds: [],
+      });
+    });
+
+    it('should skip assets not in the source album', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().owner(owner).build();
+      const [asset1, asset2] = [AssetFactory.create(), AssetFactory.create()];
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset1.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset1.id])).mockResolvedValueOnce(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, {
+          targetAlbumId: target.id,
+          assetIds: [asset1.id, asset2.id, asset1.id],
+        }),
+      ).resolves.toEqual([
+        { success: true, id: asset1.id },
+        { success: false, id: asset2.id, error: BulkIdErrorReason.NOT_FOUND },
+        { success: false, id: asset1.id, error: BulkIdErrorReason.NOT_FOUND },
+      ]);
+
+      expect(mocks.album.moveAssetIds).toHaveBeenCalledWith(source.id, target.id, [asset1.id]);
+    });
+
+    it('should not write anything when no asset can be moved', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().owner(owner).build();
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValue(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
+      ).resolves.toEqual([{ success: false, id: asset.id, error: BulkIdErrorReason.NOT_FOUND }]);
+
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.album.updateThumbnails).not.toHaveBeenCalled();
+      expect(mocks.event.emit).not.toHaveBeenCalled();
+    });
+
+    it('should skip assets the user is not allowed to add to the target album', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().owner(owner).build();
+      const [asset1, asset2] = [AssetFactory.create(), AssetFactory.create()];
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset1.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset1.id, asset2.id])).mockResolvedValueOnce(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), source.id, {
+          targetAlbumId: target.id,
+          assetIds: [asset1.id, asset2.id],
+        }),
+      ).resolves.toEqual([
+        { success: true, id: asset1.id },
+        { success: false, id: asset2.id, error: BulkIdErrorReason.NO_PERMISSION },
+      ]);
+
+      expect(mocks.access.asset.checkPartnerAccess).toHaveBeenCalledWith(owner.id, new Set([asset2.id]));
+      expect(mocks.album.moveAssetIds).toHaveBeenCalledWith(source.id, target.id, [asset1.id]);
+    });
+
+    it('should skip assets a shared user is not allowed to remove from the source album', async () => {
+      const user = UserFactory.create();
+      const source = AlbumFactory.from().albumUser({ userId: user.id, role: AlbumUserRole.Editor }).build();
+      const target = AlbumFactory.from().owner(user).build();
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) =>
+        Promise.resolve(new Set([...albumIds].filter((albumId) => albumId === target.id))),
+      );
+      mocks.access.album.checkSharedAlbumAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
+      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset.id])).mockResolvedValueOnce(new Set([asset.id]));
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(user), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
+      ).resolves.toEqual([{ success: false, id: asset.id, error: BulkIdErrorReason.NO_PERMISSION }]);
+
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
+    });
+
+    it('should not allow moving assets to the same album', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(owner), album.id, { targetAlbumId: album.id, assetIds: [asset.id] }),
+      ).rejects.toThrow(new BadRequestException('Cannot move assets to the same album'));
+
+      expect(mocks.album.getAssetIds).not.toHaveBeenCalled();
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
+    });
+
+    it('should not allow a shared user with viewer access to the target album to move assets', async () => {
+      const user = UserFactory.create();
+      const source = AlbumFactory.from().owner(user).build();
+      const target = AlbumFactory.from().albumUser({ userId: user.id, role: AlbumUserRole.Viewer }).build();
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) =>
+        Promise.resolve(new Set([...albumIds].filter((albumId) => albumId === source.id))),
+      );
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set());
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(user), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
+      ).rejects.toThrow(new BadRequestException('Not found or no albumAsset.create access'));
+
+      expect(mocks.access.album.checkSharedAlbumAccess).toHaveBeenCalledWith(
+        user.id,
+        new Set([target.id]),
+        AlbumUserRole.Editor,
+      );
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
+    });
+
+    it('should not allow unauthorized access to the source album', async () => {
+      const user = UserFactory.create();
+      const source = AlbumFactory.create();
+      const target = AlbumFactory.from().owner(user).build();
+      const asset = AssetFactory.create({ ownerId: user.id });
+      mocks.access.album.checkOwnerAccess.mockImplementation((_, albumIds) =>
+        Promise.resolve(new Set([...albumIds].filter((albumId) => albumId === target.id))),
+      );
+
+      await expect(
+        sut.moveAssets(AuthFactory.create(user), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
+      ).rejects.toThrow(new BadRequestException('Not found or no albumAsset.delete access'));
+
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
+    });
+
+    it('should require the albumAsset.create permission for an api key', async () => {
+      const owner = UserFactory.create();
+      const source = AlbumFactory.from().owner(owner).build();
+      const target = AlbumFactory.from().owner(owner).build();
+      const asset = AssetFactory.create();
+      const auth = AuthFactory.from(owner)
+        .apiKey({ permissions: [Permission.AlbumAssetDelete] })
+        .build();
+
+      await expect(sut.moveAssets(auth, source.id, { targetAlbumId: target.id, assetIds: [asset.id] })).rejects.toThrow(
+        new ForbiddenException('Missing required permission: albumAsset.create'),
+      );
+
+      expect(mocks.access.album.checkOwnerAccess).not.toHaveBeenCalled();
+      expect(mocks.album.moveAssetIds).not.toHaveBeenCalled();
     });
   });
 

@@ -1,3 +1,4 @@
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.dart';
@@ -41,6 +42,103 @@ void main() {
       final updated = await sut.get(album.id);
       expect(updated?.thumbnailAssetId, thumbnail.id);
       expect(updated?.assetCount, 1);
+    });
+  });
+
+  group('moveAssets', () {
+    late String userId;
+
+    Future<List<String>> assetIdsOf(String albumId) async {
+      final assets = await sut.getAssets(albumId);
+      return assets.map((asset) => asset.id).toList();
+    }
+
+    setUp(() async {
+      final user = await ctx.newUser();
+      userId = user.id;
+    });
+
+    test('moves only the given assets from the source album to the target album', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final moved = await ctx.newRemoteAsset(ownerId: userId);
+      final kept = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: moved.id);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: kept.id);
+
+      await sut.moveAssets(source.id, target.id, [moved.id]);
+
+      expect(await assetIdsOf(source.id), [kept.id]);
+      expect(await assetIdsOf(target.id), [moved.id]);
+    });
+
+    test('removes an asset from the source album when it is already in the target album', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final asset = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+      await ctx.newRemoteAlbumAsset(albumId: target.id, assetId: asset.id);
+
+      await sut.moveAssets(source.id, target.id, [asset.id]);
+
+      expect(await assetIdsOf(source.id), isEmpty);
+      expect(await assetIdsOf(target.id), [asset.id]);
+    });
+
+    test('sets the first moved asset as thumbnail when the target album has no thumbnail', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final first = await ctx.newRemoteAsset(ownerId: userId);
+      final second = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: first.id);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: second.id);
+
+      await sut.moveAssets(source.id, target.id, [first.id, second.id]);
+
+      final updated = await sut.get(target.id);
+      expect(updated?.thumbnailAssetId, first.id);
+    });
+
+    test('preserves an existing thumbnail of the target album', () async {
+      final thumbnail = await ctx.newRemoteAsset(ownerId: userId);
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId, thumbnailAssetId: thumbnail.id);
+      final asset = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+
+      await sut.moveAssets(source.id, target.id, [asset.id]);
+
+      final updated = await sut.get(target.id);
+      expect(updated?.thumbnailAssetId, thumbnail.id);
+    });
+
+    test('changes nothing when there are no assets to move', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final asset = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+
+      await sut.moveAssets(source.id, target.id, []);
+
+      expect(await assetIdsOf(source.id), [asset.id]);
+      expect(await assetIdsOf(target.id), isEmpty);
+    });
+
+    test('rolls back the whole move when the thumbnail update fails', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final asset = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+      await ctx.db.customStatement(
+        'CREATE TRIGGER reject_thumbnail_update BEFORE UPDATE OF thumbnail_asset_id ON remote_album_entity '
+        "BEGIN SELECT RAISE(ABORT, 'thumbnail update rejected'); END",
+      );
+
+      await expectLater(sut.moveAssets(source.id, target.id, [asset.id]), throwsA(isA<SqliteException>()));
+
+      expect(await assetIdsOf(source.id), [asset.id]);
+      expect(await assetIdsOf(target.id), isEmpty);
+      expect((await sut.get(target.id))?.thumbnailAssetId, isNull);
     });
   });
 
