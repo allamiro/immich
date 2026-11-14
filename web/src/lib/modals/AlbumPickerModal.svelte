@@ -21,18 +21,22 @@
     recentAlbums: createQuery(getRecentAlbumsQuery, () => queryClient),
   };
 
-  const albums = $derived(queries.albums.data ?? []);
-  const recentAlbums = $derived(queries.recentAlbums.data ?? []);
-  const loading = $derived(queries.albums.isPending);
-  let search = $state('');
-  let selectedRowIndex: number = $state(-1);
-
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
     selectedItemsCount?: number;
+    excludedAlbumIds?: string[];
+    title?: string;
+    multiple?: boolean;
   };
 
-  let { onClose, selectedItemsCount }: Props = $props();
+  let { onClose, selectedItemsCount, excludedAlbumIds = [], title, multiple = true }: Props = $props();
+
+  const isSelectable = ({ id }: AlbumResponseDto) => !excludedAlbumIds.includes(id);
+  const albums = $derived((queries.albums.data ?? []).filter((album) => isSelectable(album)));
+  const recentAlbums = $derived((queries.recentAlbums.data ?? []).filter((album) => isSelectable(album)));
+  const loading = $derived(queries.albums.isPending);
+  let search = $state('');
+  let selectedRowIndex: number = $state(-1);
 
   const multiSelectedAlbumIds: string[] = $state([]);
   const multiSelectActive = $derived(multiSelectedAlbumIds.length > 0);
@@ -61,6 +65,10 @@
   };
 
   const handleMultiSelect = (album?: AlbumResponseDto) => {
+    if (!multiple) {
+      return;
+    }
+
     const selectedAlbum = album ?? albumModalRows.find(({ selected }) => selected)?.album;
 
     if (!selectedAlbum) {
@@ -148,14 +156,15 @@
     }
   };
 
-  const title = $derived(
-    selectedItemsCount === undefined
-      ? $t('select_albums')
-      : $t('add_to_album_item_count', { values: { count: selectedItemsCount } }),
+  const modalTitle = $derived(
+    title ??
+      (selectedItemsCount === undefined
+        ? $t('select_albums')
+        : $t('add_to_album_item_count', { values: { count: selectedItemsCount } })),
   );
 </script>
 
-<Modal {title} {onClose} size="small">
+<Modal title={modalTitle} {onClose} size="small">
   <ModalBody>
     <div class="mb-2 flex max-h-100 flex-col">
       {#if loading}
@@ -196,7 +205,7 @@
                 multiSelected={row.multiSelected}
                 searchQuery={search}
                 onAlbumClick={() => handleAlbumClick(row.album)}
-                onMultiSelect={() => handleMultiSelect(row.album)}
+                onMultiSelect={multiple ? () => handleMultiSelect(row.album) : undefined}
               />
             {/if}
           {/each}
@@ -218,12 +227,14 @@
           </span>
           <Text size="tiny">{$t('to_select')}</Text>
         </div>
-        <div class="flex place-items-center gap-1">
-          <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
-            <Text size="tiny">CTRL</Text>
-          </span>
-          <Text size="tiny">{$t('to_multi_select')}</Text>
-        </div>
+        {#if multiple}
+          <div class="flex place-items-center gap-1">
+            <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
+              <Text size="tiny">CTRL</Text>
+            </span>
+            <Text size="tiny">{$t('to_multi_select')}</Text>
+          </div>
+        {/if}
       </div>
     </div>
   </ModalFooter>

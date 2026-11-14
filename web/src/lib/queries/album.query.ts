@@ -15,6 +15,7 @@ import {
   getAlbumMapMarkers,
   getAlbumStatistics,
   getAllAlbums,
+  moveAssetsToAlbum,
   removeAssetFromAlbum,
   removeUserFromAlbum,
   updateAlbumInfo,
@@ -200,6 +201,44 @@ export const addAssetsToAlbumsMutation = ({ notify = true }: { notify?: boolean 
       await onAlbumAssetsChange(albumIds);
     },
     meta: { error: { toast: 'errors.error_adding_assets_to_album' } },
+  });
+
+const notifyMoveToAlbum = (
+  $t: MessageFormatter,
+  targetAlbumId: string,
+  { movedCount, notMovedCount }: { movedCount: number; notMovedCount: number },
+) => {
+  if (movedCount > 0) {
+    toastManager.primary(
+      {
+        description: $t('assets_moved_to_album_count', { values: { count: movedCount } }),
+        button: { label: $t('view_album'), onclick: () => goto(Route.viewAlbum({ id: targetAlbumId })) },
+      },
+      { timeout: 5000 },
+    );
+  }
+
+  if (notMovedCount > 0) {
+    toastManager.warning($t('assets_cannot_be_moved_to_album_count', { values: { count: notMovedCount } }));
+  }
+};
+
+export const moveAssetsToAlbumMutation = () =>
+  asMutation(moveAssetsToAlbum, {
+    onSuccess: async (results, [{ id, albumMoveAssetsDto }]) => {
+      const { targetAlbumId, assetIds } = albumMoveAssetsDto;
+      const movedIds = results.filter(({ success }) => success).map(({ id }) => id);
+      if (movedIds.length > 0) {
+        eventManager.emit('AlbumRemoveAssets', { assetIds: movedIds, albumIds: [id] });
+      }
+
+      notifyMoveToAlbum(await getFormatter(), targetAlbumId, {
+        movedCount: movedIds.length,
+        notMovedCount: assetIds.length - movedIds.length,
+      });
+      await onAlbumAssetsChange([id, targetAlbumId]);
+    },
+    meta: { error: { toast: 'errors.error_moving_assets_to_album' } },
   });
 
 export const removeAssetFromAlbumMutation = () =>

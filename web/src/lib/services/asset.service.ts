@@ -5,6 +5,7 @@ import { authManager } from '#lib/managers/auth-manager.svelte.ts';
 import { eventManager } from '#lib/managers/event-manager.svelte.ts';
 import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
 import AssetAddToAlbumModal from '#lib/modals/AssetAddToAlbumModal.svelte';
+import AssetMoveToAlbumModal from '#lib/modals/AssetMoveToAlbumModal.svelte';
 import AssetTagModal from '#lib/modals/AssetTagModal.svelte';
 import ProfileImageCropperModal from '#lib/modals/ProfileImageCropperModal.svelte';
 import SharedLinkCreateModal from '#lib/modals/SharedLinkCreateModal.svelte';
@@ -60,6 +61,7 @@ import {
   mdiShareVariantOutline,
   mdiTagMultipleOutline,
   mdiTagPlusOutline,
+  mdiTransferRight,
   mdiTune,
 } from '@mdi/js';
 import { t, type MessageFormatter } from 'svelte-i18n';
@@ -100,6 +102,17 @@ export const getAssetBulkActions = ($t: MessageFormatter, album?: AlbumResponseD
     title: $t('share'),
     icon: mdiShareVariantOutline,
     onAction: () => modalManager.show(SharedLinkCreateModal, { assetIds }),
+  };
+
+  const MoveToAlbum: ActionItem = {
+    title: $t('move_to_album'),
+    icon: mdiTransferRight,
+    $if: () => !!album && (isAlbumOwner || assetMultiSelectManager.isAllUserOwned),
+    onAction: async () => {
+      if (await modalManager.show(AssetMoveToAlbumModal, { assetIds, sourceAlbum: album! })) {
+        assetMultiSelectManager.clear();
+      }
+    },
   };
 
   const RemoveFromAlbum: ActionItem = {
@@ -163,6 +176,7 @@ export const getAssetBulkActions = ($t: MessageFormatter, album?: AlbumResponseD
     AddToAlbum,
     Archive,
     CreateSharedLink,
+    MoveToAlbum,
     RemoveFromAlbum,
     Tag,
     Unarchive,
