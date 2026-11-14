@@ -1,5 +1,5 @@
 import { YuccaService } from '@futo-org/backups-orchestrator-api';
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { parseCookie } from 'cookie';
 import { NextFunction, Request, Response } from 'express';
@@ -35,7 +35,6 @@ import type { MaintenanceModeState } from 'src/types.js';
 import { getConfig } from 'src/utils/config.js';
 import { createMaintenanceLoginUrl, detectPriorInstall } from 'src/utils/maintenance.js';
 import { getExternalDomain } from 'src/utils/misc.js';
-import { isCrossOriginRequest } from 'src/utils/request.js';
 import { detectMediaLocation } from 'src/utils/storage.js';
 
 /** This service is available inside of maintenance mode to manage maintenance mode */
@@ -81,9 +80,7 @@ export class MaintenanceWorkerService {
 
     StorageCore.setMediaLocation(this.detectMediaLocation());
 
-    this.maintenanceWebsocketRepository.setAuthFn(async (client) =>
-      this.authenticate(client.request.headers, client.request.method),
-    );
+    this.maintenanceWebsocketRepository.setAuthFn(async (client) => this.authenticate(client.request.headers));
     this.maintenanceWebsocketRepository.setStatusUpdateFn((status) => (this.#status = status));
 
     await this.logSecret();
@@ -221,11 +218,7 @@ export class MaintenanceWorkerService {
     this.logger.log(`\n\n🚧 Immich is in maintenance mode, you can log in using the following URL:\n${url}\n`);
   }
 
-  async authenticate(headers: IncomingHttpHeaders, method?: string): Promise<MaintenanceAuthDto> {
-    if (isCrossOriginRequest(headers, method)) {
-      throw new ForbiddenException('Cross-origin request blocked');
-    }
-
+  async authenticate(headers: IncomingHttpHeaders): Promise<MaintenanceAuthDto> {
     const jwtToken = parseCookie(headers.cookie || '')[ImmichCookie.MaintenanceToken];
     return this.login(jwtToken);
   }

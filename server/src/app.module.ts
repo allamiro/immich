@@ -100,7 +100,7 @@ export class BaseModule implements OnModuleInit, OnModuleDestroy {
       this.authService.authenticate({
         headers: client.request.headers,
         queryParams: {},
-        metadata: { adminRoute: false, sharedLinkRoute: false, uri: '/api/socket.io', method: client.request.method },
+        metadata: { adminRoute: false, sharedLinkRoute: false, uri: '/api/socket.io' },
       }),
     );
 
@@ -133,12 +133,7 @@ export class BaseModule implements OnModuleInit, OnModuleDestroy {
           authService.authenticate({
             headers: client.request.headers,
             queryParams: {},
-            metadata: {
-              adminRoute: true,
-              sharedLinkRoute: false,
-              uri: '/api/futo-backups/socket.io',
-              method: client.request.method,
-            },
+            metadata: { adminRoute: true, sharedLinkRoute: false, uri: '/api/futo-backups/socket.io' },
           }),
       }),
     }),
@@ -168,7 +163,7 @@ export class ApiModule extends BaseModule {
         requireLock: true,
         developmentMode: isFutoBackupsDevelopmentMode,
         authenticate: async (client) => {
-          await maintenanceWorkerService.authenticate(client.request.headers, client.request.method);
+          await maintenanceWorkerService.authenticate(client.request.headers);
           return { user: { isAdmin: true } };
         },
       }),

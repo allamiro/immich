@@ -8,7 +8,6 @@ These pull requests from `immich-app/immich` are approved upstream but not yet m
 | [#33190](https://github.com/immich-app/immich/pull/33190) | fix(web): remove accidental raw json tooltip on large file cards | `a517f064c39ac4f4f4fc2fb88ab7ccb4c8358c08` | 2026-11-14 |
 | [#33142](https://github.com/immich-app/immich/pull/33142) | chore: update flutter timezone dep | `71f7acac62def08206be9b05995af04b36638eab` | 2026-11-14 |
 | [#33213](https://github.com/immich-app/immich/pull/33213) | feat: workflow tag filter children matching | `4f2c17902e5800edccd23510a519d17ef0306ea0` | 2026-11-14 |
-| [#33288](https://github.com/immich-app/immich/pull/33288) | fix(server): reject cross-origin requests that use the session cookie | `26ea1211418c8afc10ccf3dc7237f85fbb0dfd0d` | 2026-11-14 |
 
 ## Adding a pull request
 

@@ -1,5 +1,4 @@
 {
-  "referrerPolicy": { "policy": "same-origin" },
   "contentSecurityPolicy": {
     "directives": {
       "default-src": ["'self'"],
