@@ -1,13 +1,13 @@
 import { Selectable, ShallowDehydrateObject } from 'kysely';
-import { createZodDto } from 'nestjs-zod';
-import { AssetFace, AssetFile, Exif, Stack, Tag, User } from 'src/database';
-import { HistoryBuilder } from 'src/decorators';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { AssetEditActionItem } from 'src/dtos/editing.dto';
-import { ExifResponseSchema, mapExif } from 'src/dtos/exif.dto';
-import { PersonResponseDto, PersonResponseSchema, mapPerson } from 'src/dtos/person.dto';
-import { TagResponseSchema, mapTag } from 'src/dtos/tag.dto';
-import { UserResponseSchema, mapUser } from 'src/dtos/user.dto';
+import z from 'zod';
+import { AssetFace, AssetFile, Exif, Stack, Tag, User } from 'src/database.js';
+import { HistoryBuilder } from 'src/decorators.js';
+import { AuthDto, isMetadataHidden } from 'src/dtos/auth.dto.js';
+import { AssetEditActionItem } from 'src/dtos/editing.dto.js';
+import { ExifResponseSchema, mapExif } from 'src/dtos/exif.dto.js';
+import { PersonResponseDto, PersonResponseSchema, mapPerson } from 'src/dtos/person.dto.js';
+import { TagResponseSchema, mapTag } from 'src/dtos/tag.dto.js';
+import { UserResponseSchema, mapUser } from 'src/dtos/user.dto.js';
 import {
   AssetStatus,
   AssetType,
@@ -15,16 +15,16 @@ import {
   AssetVisibility,
   AssetVisibilitySchema,
   ChecksumAlgorithm,
-} from 'src/enum';
-import { MaybeDehydrated } from 'src/types';
-import { hexOrBufferToBase64 } from 'src/utils/bytes';
-import { asDateTimeString } from 'src/utils/date';
-import { mimeTypes } from 'src/utils/mime-types';
-import z from 'zod';
+} from 'src/enum.js';
+import type { MaybeDehydrated } from 'src/types.js';
+import { hexOrBufferToBase64 } from 'src/utils/bytes.js';
+import { asDateTimeString } from 'src/utils/date.js';
+import { mimeTypes } from 'src/utils/mime-types.js';
+import { createZodDto } from 'src/zod.js';
 
 const SanitizedAssetResponseSchema = z
   .object({
-    id: z.string().describe('Asset ID'),
+    id: z.uuidv4().describe('Asset ID'),
     type: AssetTypeSchema,
     thumbhash: z
       .string()
@@ -52,8 +52,8 @@ export class SanitizedAssetResponseDto extends createZodDto(SanitizedAssetRespon
 
 const AssetStackResponseSchema = z
   .object({
-    id: z.string().describe('Stack ID'),
-    primaryAssetId: z.string().describe('Primary asset ID'),
+    id: z.uuidv4().describe('Stack ID'),
+    primaryAssetId: z.uuidv4().describe('Primary asset ID'),
     assetCount: z.int().min(0).describe('Number of assets in stack'),
   })
   .meta({ id: 'AssetStackResponseDto' });
@@ -65,7 +65,7 @@ export const AssetResponseSchema = SanitizedAssetResponseSchema.extend(
       .string()
       .meta({ format: 'date-time' })
       .describe('The UTC timestamp when the asset was originally uploaded to Immich.'),
-    ownerId: z.string().describe('Owner user ID'),
+    ownerId: z.uuidv4().describe('Owner user ID'),
     owner: UserResponseSchema.optional(),
     libraryId: z
       .uuidv4()
@@ -103,7 +103,7 @@ export const AssetResponseSchema = SanitizedAssetResponseSchema.extend(
     people: z.array(PersonResponseSchema).optional(),
     checksum: z.string().describe('Base64 encoded SHA1 hash'),
     stack: AssetStackResponseSchema.nullish(),
-    duplicateId: z.string().nullish().describe('Duplicate group ID'),
+    duplicateId: z.uuidv4().nullish().describe('Duplicate group ID'),
     resized: z
       .boolean()
       .optional()
@@ -157,7 +157,6 @@ export type MapAsset = {
 };
 
 export type AssetMapOptions = {
-  stripMetadata?: boolean;
   withStack?: boolean;
   auth?: AuthDto;
 };
@@ -170,12 +169,12 @@ const peopleFromFaces = (faces?: MaybeDehydrated<AssetFace>[]): PersonResponseDt
   const peopleMap: Map<string, PersonResponseDto> = new Map();
 
   for (const face of faces) {
-    if (face.person && !peopleMap.has(face.person.id)) {
-      peopleMap.set(face.person.id, mapPerson(face.person));
+    if (face.person && !peopleMap.has(face.person.personGroupId)) {
+      peopleMap.set(face.person.personGroupId, mapPerson(face.person));
     }
   }
 
-  return [...peopleMap.values()];
+  return peopleMap.values().toArray();
 };
 
 const mapStack = (entity: { stack?: Stack | null }) => {
@@ -191,9 +190,9 @@ const mapStack = (entity: { stack?: Stack | null }) => {
 };
 
 export function mapAsset(entity: MaybeDehydrated<MapAsset>, options: AssetMapOptions = {}): AssetResponseDto {
-  const { stripMetadata = false, withStack = false } = options;
+  const { withStack = false, auth } = options;
 
-  if (stripMetadata) {
+  if (isMetadataHidden(auth)) {
     const sanitizedAssetResponse: SanitizedAssetResponseDto = {
       id: entity.id,
       type: entity.type,
@@ -213,7 +212,7 @@ export function mapAsset(entity: MaybeDehydrated<MapAsset>, options: AssetMapOpt
     id: entity.id,
     createdAt: asDateTimeString(entity.createdAt),
     ownerId: entity.ownerId,
-    owner: entity.owner ? mapUser(entity.owner) : undefined,
+    owner: entity.owner && !auth?.sharedLink ? mapUser(entity.owner) : undefined,
     libraryId: entity.libraryId,
     type: entity.type,
     originalPath: entity.originalPath,
@@ -232,7 +231,7 @@ export function mapAsset(entity: MaybeDehydrated<MapAsset>, options: AssetMapOpt
     exifInfo: entity.exifInfo ? mapExif(entity.exifInfo) : undefined,
     livePhotoVideoId: entity.livePhotoVideoId,
     tags: entity.tags?.map((tag) => mapTag(tag)),
-    people: peopleFromFaces(entity.faces),
+    people: auth?.sharedLink ? [] : peopleFromFaces(entity.faces),
     checksum: hexOrBufferToBase64(entity.checksum)!,
     stack: withStack ? mapStack(entity) : undefined,
     isOffline: entity.isOffline,

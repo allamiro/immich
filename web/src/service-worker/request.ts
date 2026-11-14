@@ -1,8 +1,3 @@
-/// <reference types="@sveltejs/kit" />
-/// <reference no-default-lib="true"/>
-/// <reference lib="esnext" />
-/// <reference lib="webworker" />
-
 type PendingRequest = {
   controller: AbortController;
   promise: Promise<Response>;
@@ -16,7 +11,7 @@ const getRequestKey = (request: URL | Request): string => (request instanceof UR
 const CANCELATION_MESSAGE = 'Request canceled by application';
 const CLEANUP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-export const handleFetch = (request: URL | Request): Promise<Response> => {
+export const handleFetch = async (request: URL | Request): Promise<Response> => {
   const requestKey = getRequestKey(request);
   const existing = pendingRequests.get(requestKey);
 

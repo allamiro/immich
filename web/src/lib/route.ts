@@ -1,6 +1,6 @@
-import { QueueName, type MetadataSearchDto, type SmartSearchDto } from '@immich/sdk';
+import { OpenQueryParam, type SharedLinkTab } from '#lib/constants.ts';
+import { IntegrityReport, QueueName, getBaseUrl, type MetadataSearchDto, type SmartSearchDto } from '@immich/sdk';
 import { omitBy } from 'lodash-es';
-import { OpenQueryParam, type SharedLinkTab } from '$lib/constants';
 
 const asQueueSlug = (name: QueueName) => {
   return name.replaceAll(/[A-Z]/g, (m) => '-' + m.toLowerCase());
@@ -13,12 +13,8 @@ export const fromQueueSlug = (slug: string): QueueName | undefined => {
   }
 };
 
-type QueryValue = number | string;
-const asQueryString = (
-  params?: Record<string, QueryValue | undefined>,
-  options?: { skipEmptyStrings?: boolean; skipNullValues?: boolean },
-) => {
-  const { skipEmptyStrings = true, skipNullValues = true } = options ?? {};
+type QueryValue = number | string | boolean;
+const asQueryString = (params?: Record<string, QueryValue | undefined>) => {
   const items = Object.entries(params ?? {})
     .filter((item): item is [string, QueryValue] => {
       const value = item[1];
@@ -27,25 +23,15 @@ const asQueryString = (
         return false;
       }
 
-      if (skipNullValues && value === null) {
+      if (value === null) {
         return false;
       }
 
-      if (skipEmptyStrings && value === '') {
-        return false;
-      }
-
-      return true;
+      return value !== '';
     })
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
 
   return items.length === 0 ? '' : `?${items.join('&')}`;
-};
-
-const DOCS_BASE = 'https://docs.immich.app';
-
-export const Docs = {
-  duplicates: () => `${DOCS_BASE}/features/duplicates-utility`,
 };
 
 export const Route = {
@@ -87,7 +73,11 @@ export const Route = {
     '/map' + (point ? `#${point.zoom}/${point.lat}/${point.lng}` : ''),
 
   // memories
-  memories: (params?: { id?: string }) => '/memory' + asQueryString(params),
+  memories: (params?: { isSaved?: boolean }) => '/memories' + asQueryString(params),
+  viewMemory: ({ id, ...params }: { id: string; assetId?: string; isSaved?: boolean }) =>
+    `/memories/${id}` + asQueryString(params),
+  viewMemoryAsset: ({ id, assetId, ...params }: { id: string; assetId: string; isSaved?: boolean }) =>
+    `/memories/${id}/photos/${assetId}` + asQueryString({ assetId, ...params }),
 
   // partners
   viewPartner: ({ id }: { id: string }) => `/partners/${id}`,
@@ -120,7 +110,8 @@ export const Route = {
   // shared links
   sharedLinks: (params?: { filter?: SharedLinkTab }) => '/shared-links' + asQueryString(params),
   editSharedLink: ({ id }: { id: string }) => `/shared-links/${id}/edit`,
-  viewSharedLink: ({ slug, key }: { slug?: string | null; key: string }) => (slug ? `/s/${slug}` : `/share/${key}`),
+  viewSharedLink: ({ slug, key }: { slug?: string | null; key: string }) =>
+    slug ? `/s/${encodeURIComponent(slug)}` : `/share/${key}`,
 
   // settings
   userSettings: (params?: { isOpen?: OpenQueryParam }) => '/user-settings' + asQueryString(params),
@@ -129,6 +120,8 @@ export const Route = {
   systemSettings: (params?: { isOpen?: OpenQueryParam }) => '/admin/system-settings' + asQueryString(params),
   systemStatistics: () => '/admin/server-status',
   systemMaintenance: (params?: { continue?: string }) => '/admin/maintenance' + asQueryString(params),
+  systemMaintenanceIntegrityReport: ({ reportType }: { reportType: IntegrityReport }) =>
+    `/admin/maintenance/integrity-report/${reportType}`,
 
   // tags
   tags: (params?: { path?: string }) => '/tags' + asQueryString(params),
@@ -149,16 +142,32 @@ export const Route = {
   workflows: () => '/workflows',
   viewWorkflow: ({ id }: { id: string }) => `/workflows/${id}`,
 
+  // backups
+  backups: () => '/admin/backups',
+  backupSettings: () => '/admin/backups/settings',
+  backupAttempts: () => '/admin/backups/attempts',
+  backupSnapshots: () => '/admin/backups/snapshots',
+
   // queues
   queues: () => '/admin/queues',
   viewQueue: ({ name }: { name: QueueName }) => `/admin/queues/${asQueueSlug(name)}`,
 
+  // integrity checks
+  integrityReportFile: (reportId: string) => `${getBaseUrl()}/admin/integrity/report/${reportId}/file`,
+  integrityReportCsv: (reportType: IntegrityReport) => `${getBaseUrl()}/admin/integrity/report/${reportType}/csv`,
+
   // continue helper for ensuring same-origin URLs
-  continue: (url: string | null, fallback: string) => {
-    if (!url || !url.startsWith('/') || url.startsWith('//')) {
+  continue: (url: string | null, fallback: string): string | URL => {
+    const resolved = new URL(url ?? fallback, document.baseURI);
+
+    if (resolved.origin !== location.origin) {
       return fallback;
     }
 
-    return url;
+    return resolved;
   },
+};
+
+export const ExternalRoute = {
+  docs: () => 'https://docs.immich.app/overview/quick-start',
 };

@@ -1,3 +1,6 @@
+import { truncateMiddle } from '#lib/utils.ts';
+import { getAssetResolution, getFileSize } from '#lib/utils/asset-utils.ts';
+import { fromISODateTime, fromISODateTimeUTC } from '#lib/utils/timeline-util.ts';
 import type { AssetResponseDto } from '@immich/sdk';
 import {
   mdiBrightness6,
@@ -24,25 +27,6 @@ import {
 } from '@mdi/js';
 import { DateTime } from 'luxon';
 import type { MessageFormatter } from 'svelte-i18n';
-import { getAssetResolution, getFileSize } from '$lib/utils/asset-utils';
-import { fromISODateTime, fromISODateTimeUTC } from '$lib/utils/timeline-util';
-
-const truncateMiddle = (path: string, maxLength = 50): string => {
-  if (path.length <= maxLength) {
-    return path;
-  }
-
-  const lastSlash = path.lastIndexOf('/');
-  const tail = lastSlash === -1 ? path : path.slice(lastSlash);
-
-  if (tail.length >= maxLength - 3) {
-    const half = Math.floor((maxLength - 3) / 2);
-    return path.slice(0, half) + '...' + path.slice(-half);
-  }
-
-  const headLength = maxLength - 3 - tail.length;
-  return path.slice(0, headLength) + '...' + tail;
-};
 
 const formatISODateToLocale = (iso: string, locale: string | undefined): string =>
   fromISODateTimeUTC(iso).toLocaleString({ month: 'short', day: 'numeric', year: 'numeric' }, { locale });
@@ -59,6 +43,7 @@ type MetadataFieldDefinition = {
   titleKey: string;
   keys: readonly string[];
   render: (asset: AssetResponseDto, $t: MessageFormatter, locale: string | undefined) => string;
+  tooltip?: (asset: AssetResponseDto, $t: MessageFormatter) => string;
 };
 
 const metadataFields = [
@@ -73,6 +58,7 @@ const metadataFields = [
     titleKey: 'path',
     keys: ['originalPath'],
     render: (asset, $t) => truncateMiddle(asset.originalPath) || $t('unknown'),
+    tooltip: (asset, $t) => $t('full_path', { values: { path: asset.originalPath } }),
   },
   {
     icon: mdiWeightKilogram,
@@ -147,9 +133,10 @@ const metadataFields = [
     titleKey: 'gps',
     keys: ['latitude', 'longitude'],
     render: (asset, $t) =>
-      asset.exifInfo?.latitude != null && asset.exifInfo?.longitude != null
-        ? `${asset.exifInfo.latitude.toFixed(4)}, ${asset.exifInfo.longitude.toFixed(4)}`
-        : $t('unknown'),
+      // eslint-disable-next-line eqeqeq
+      asset.exifInfo?.latitude == null || asset.exifInfo?.longitude == null
+        ? $t('unknown')
+        : `${asset.exifInfo.latitude.toFixed(4)}, ${asset.exifInfo.longitude.toFixed(4)}`,
   },
   {
     icon: mdiCameraOutline,
@@ -173,18 +160,21 @@ const metadataFields = [
     icon: mdiCameraIris,
     titleKey: 'f_number',
     keys: ['fNumber'],
+    // eslint-disable-next-line eqeqeq
     render: (asset, $t) => (asset.exifInfo?.fNumber == null ? $t('unknown') : `f/${asset.exifInfo.fNumber.toFixed(1)}`),
   },
   {
     icon: mdiRayStartArrow,
     titleKey: 'focal_length',
     keys: ['focalLength'],
+    // eslint-disable-next-line eqeqeq
     render: (asset, $t) => (asset.exifInfo?.focalLength == null ? $t('unknown') : `${asset.exifInfo.focalLength} mm`),
   },
   {
     icon: mdiBrightness6,
     titleKey: 'iso',
     keys: ['iso'],
+    // eslint-disable-next-line eqeqeq
     render: (asset, $t) => (asset.exifInfo?.iso == null ? $t('unknown') : `ISO ${asset.exifInfo.iso}`),
   },
   {
@@ -203,13 +193,14 @@ const metadataFields = [
     icon: mdiStarOutline,
     titleKey: 'rating',
     keys: ['rating'],
+    // eslint-disable-next-line eqeqeq
     render: (asset, $t) => (asset.exifInfo?.rating == null ? $t('unknown') : `${asset.exifInfo.rating} stars`),
   },
   {
     icon: mdiPhoneRotateLandscape,
     titleKey: 'orientation',
     keys: ['orientation'],
-    render: (asset, $t) => String(asset.exifInfo?.orientation || $t('unknown')),
+    render: (asset, $t) => asset.exifInfo?.orientation || $t('unknown'),
   },
   {
     icon: mdiPanorama,
@@ -228,11 +219,12 @@ export const countDifferingMetadataItems = (differing: DifferingMetadataFields):
   metadataFields.filter(({ keys }) => keys.some((k) => differing[k as MetadataFieldKey])).length;
 
 export const getAllMetadataItems = (asset: AssetResponseDto, $t: MessageFormatter, locale: string | undefined) =>
-  metadataFields.map(({ icon, titleKey, keys, render }) => ({
-    icon,
-    title: $t(titleKey),
-    render: render(asset, $t, locale),
-    keys,
+  metadataFields.map((field) => ({
+    icon: field.icon,
+    title: $t(field.titleKey),
+    render: field.render(asset, $t, locale),
+    tooltip: 'tooltip' in field ? field.tooltip(asset, $t) : undefined,
+    keys: field.keys,
   }));
 
 const normalizeForComparison = (key: MetadataFieldKey, value: unknown): unknown => {
@@ -240,7 +232,7 @@ const normalizeForComparison = (key: MetadataFieldKey, value: unknown): unknown 
     return value;
   }
 
-  if (key === 'fileCreatedAt' || key === 'fileModifiedAt' || key === 'dateTimeOriginal' || key === 'modifyDate') {
+  if (['fileCreatedAt', 'fileModifiedAt', 'dateTimeOriginal', 'modifyDate'].includes(key)) {
     const dateTime = DateTime.fromISO(String(value));
     return dateTime.isValid ? dateTime.toISO() : String(value);
   }
@@ -273,7 +265,7 @@ const getValueForAsset = (asset: AssetResponseDto, key: MetadataFieldKey): unkno
       return getAssetResolution(asset);
     }
     default: {
-      if (asset.exifInfo && key in asset.exifInfo) {
+      if (asset.exifInfo && Object.hasOwn(asset.exifInfo, key)) {
         return asset.exifInfo[key as keyof typeof asset.exifInfo];
       }
       return undefined;
@@ -285,15 +277,7 @@ export const computeDifferingMetadataFields = (assets: AssetResponseDto[]): Diff
   const diffs: DifferingMetadataFields = {};
 
   for (const key of metadataKeys) {
-    const uniqueValues = new Set<unknown>();
-
-    for (const asset of assets) {
-      const value = getValueForAsset(asset, key);
-      if (value !== undefined && value !== null) {
-        uniqueValues.add(normalizeForComparison(key, value));
-      }
-    }
-
+    const uniqueValues = new Set(assets.map((asset) => normalizeForComparison(key, getValueForAsset(asset, key))));
     diffs[key] = uniqueValues.size > 1;
   }
 

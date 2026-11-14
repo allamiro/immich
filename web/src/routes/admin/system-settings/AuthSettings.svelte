@@ -1,35 +1,40 @@
 <script lang="ts">
-  import SettingAccordion from '$lib/components/shared-components/settings/SettingAccordion.svelte';
-  import SettingInputField from '$lib/components/shared-components/settings/SettingInputField.svelte';
-  import SettingSwitch from '$lib/components/shared-components/settings/SettingSwitch.svelte';
-  import SettingButtonsRow from '$lib/components/shared-components/settings/SystemConfigButtonRow.svelte';
-  import { SettingInputFieldType } from '$lib/constants';
-  import FormatMessage from '$lib/elements/FormatMessage.svelte';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import { systemConfigManager } from '$lib/managers/system-config-manager.svelte';
-  import AuthDisableLoginConfirmModal from '$lib/modals/AuthDisableLoginConfirmModal.svelte';
-  import { handleError } from '$lib/utils/handle-error';
+  import SettingAccordion from '#lib/components/shared-components/settings/SettingAccordion.svelte';
+  import SettingInputField from '#lib/components/shared-components/settings/SettingInputField.svelte';
+  import SettingSwitch from '#lib/components/shared-components/settings/SettingSwitch.svelte';
+  import SettingButtonsRow from '#lib/components/shared-components/settings/SystemConfigButtonRow.svelte';
+  import { SettingInputFieldType } from '#lib/constants.ts';
+  import FormatMessage from '#lib/elements/FormatMessage.svelte';
+  import { featureFlagsManager } from '#lib/managers/feature-flags-manager.svelte.ts';
+  import AuthDisableLoginConfirmModal from '#lib/modals/AuthDisableLoginConfirmModal.svelte';
+  import { createPreloadedQuery } from '#lib/queries/client.ts';
+  import { getAdminConfigQuery } from '#lib/queries/config-admin.query.ts';
+  import { handleError } from '#lib/utils/handle-error.ts';
   import { OAuthTokenEndpointAuthMethod, unlinkAllOAuthAccountsAdmin } from '@immich/sdk';
-  import { Button, Link, modalManager, Text, toastManager } from '@immich/ui';
-  import { mdiRestart } from '@mdi/js';
+  import { Button, IconButton, Link, Text, modalManager, toastManager } from '@immich/ui';
+  import { mdiPlus, mdiRestart, mdiTrashCanOutline } from '@mdi/js';
+  import { cloneDeep } from 'lodash-es';
   import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
   import SettingSelect from './SettingSelect.svelte';
 
+  const query = createPreloadedQuery(getAdminConfigQuery);
+  const config = $derived(query.data);
+
   const disabled = $derived(featureFlagsManager.value.configFile);
-  const config = $derived(systemConfigManager.value);
-  let configToEdit = $state(systemConfigManager.cloneValue());
+  let configToEdit = $state(cloneDeep(config));
 
   const handleToggleOverride = () => {
     // click runs before bind
     const previouslyEnabled = configToEdit.oauth.mobileOverrideEnabled;
     if (!previouslyEnabled && !configToEdit.oauth.mobileRedirectUri) {
-      configToEdit.oauth.mobileRedirectUri = globalThis.location.origin + '/api/oauth/mobile-redirect';
+      configToEdit.oauth.mobileRedirectUri = location.origin + '/api/oauth/mobile-redirect';
     }
   };
 
   const onBeforeSave = async () => {
-    const allMethodsDisabled = !configToEdit.oauth.enabled && !configToEdit.passwordLogin.enabled;
+    const allMethodsDisabled =
+      !configToEdit.oauth.enabled && !configToEdit.passkey.enabled && !configToEdit.passwordLogin.enabled;
 
     if (allMethodsDisabled) {
       const confirmed = await modalManager.show(AuthDisableLoginConfirmModal);
@@ -102,7 +107,7 @@
                 bind:value={configToEdit.oauth.issuerUrl}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.issuerUrl === config.oauth.issuerUrl)}
+                isEdited={configToEdit.oauth.issuerUrl !== config.oauth.issuerUrl}
               />
 
               <SettingInputField
@@ -111,7 +116,7 @@
                 bind:value={configToEdit.oauth.clientId}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.clientId === config.oauth.clientId)}
+                isEdited={configToEdit.oauth.clientId !== config.oauth.clientId}
               />
 
               <SettingInputField
@@ -120,7 +125,7 @@
                 description={$t('admin.oauth_client_secret_description')}
                 bind:value={configToEdit.oauth.clientSecret}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.clientSecret === config.oauth.clientSecret)}
+                isEdited={configToEdit.oauth.clientSecret !== config.oauth.clientSecret}
               />
 
               {#if configToEdit.oauth.clientSecret}
@@ -128,7 +133,7 @@
                   label="token_endpoint_auth_method"
                   bind:value={configToEdit.oauth.tokenEndpointAuthMethod}
                   disabled={disabled || !configToEdit.oauth.enabled || !configToEdit.oauth.clientSecret}
-                  isEdited={!(configToEdit.oauth.tokenEndpointAuthMethod === config.oauth.tokenEndpointAuthMethod)}
+                  isEdited={configToEdit.oauth.tokenEndpointAuthMethod !== config.oauth.tokenEndpointAuthMethod}
                   options={[
                     { value: OAuthTokenEndpointAuthMethod.ClientSecretPost, text: 'client_secret_post' },
                     { value: OAuthTokenEndpointAuthMethod.ClientSecretBasic, text: 'client_secret_basic' },
@@ -143,7 +148,7 @@
                 bind:value={configToEdit.oauth.scope}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.scope === config.oauth.scope)}
+                isEdited={configToEdit.oauth.scope !== config.oauth.scope}
               />
 
               <SettingInputField
@@ -152,7 +157,7 @@
                 bind:value={configToEdit.oauth.signingAlgorithm}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.signingAlgorithm === config.oauth.signingAlgorithm)}
+                isEdited={configToEdit.oauth.signingAlgorithm !== config.oauth.signingAlgorithm}
               />
 
               <SettingInputField
@@ -161,7 +166,7 @@
                 bind:value={configToEdit.oauth.profileSigningAlgorithm}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.profileSigningAlgorithm === config.oauth.profileSigningAlgorithm)}
+                isEdited={configToEdit.oauth.profileSigningAlgorithm !== config.oauth.profileSigningAlgorithm}
               />
 
               <SettingInputField
@@ -171,7 +176,7 @@
                 bind:value={configToEdit.oauth.prompt}
                 required={false}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.prompt === config.oauth.prompt)}
+                isEdited={configToEdit.oauth.prompt !== config.oauth.prompt}
               />
 
               <SettingInputField
@@ -181,7 +186,7 @@
                 bind:value={configToEdit.oauth.endSessionEndpoint}
                 required={false}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.endSessionEndpoint === config.oauth.endSessionEndpoint)}
+                isEdited={configToEdit.oauth.endSessionEndpoint !== config.oauth.endSessionEndpoint}
               />
 
               <SettingInputField
@@ -191,7 +196,7 @@
                 required={true}
                 bind:value={configToEdit.oauth.timeout}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.timeout === config.oauth.timeout)}
+                isEdited={configToEdit.oauth.timeout !== config.oauth.timeout}
               />
 
               <SettingSwitch
@@ -199,7 +204,7 @@
                 subtitle={$t('admin.oauth_allow_insecure_requests_description')}
                 bind:checked={configToEdit.oauth.allowInsecureRequests}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.allowInsecureRequests === config.oauth.allowInsecureRequests)}
+                isEdited={configToEdit.oauth.allowInsecureRequests !== config.oauth.allowInsecureRequests}
               />
 
               <SettingInputField
@@ -209,7 +214,7 @@
                 bind:value={configToEdit.oauth.storageLabelClaim}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.storageLabelClaim === config.oauth.storageLabelClaim)}
+                isEdited={configToEdit.oauth.storageLabelClaim !== config.oauth.storageLabelClaim}
               />
 
               <SettingInputField
@@ -219,7 +224,7 @@
                 bind:value={configToEdit.oauth.roleClaim}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.roleClaim === config.oauth.roleClaim)}
+                isEdited={configToEdit.oauth.roleClaim !== config.oauth.roleClaim}
               />
 
               <SettingInputField
@@ -229,7 +234,7 @@
                 bind:value={configToEdit.oauth.storageQuotaClaim}
                 required={true}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.storageQuotaClaim === config.oauth.storageQuotaClaim)}
+                isEdited={configToEdit.oauth.storageQuotaClaim !== config.oauth.storageQuotaClaim}
               />
 
               <SettingInputField
@@ -239,7 +244,7 @@
                 bind:value={configToEdit.oauth.defaultStorageQuota}
                 required={false}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.defaultStorageQuota === config.oauth.defaultStorageQuota)}
+                isEdited={configToEdit.oauth.defaultStorageQuota !== config.oauth.defaultStorageQuota}
               />
 
               <SettingInputField
@@ -248,7 +253,17 @@
                 bind:value={configToEdit.oauth.buttonText}
                 required={false}
                 disabled={disabled || !configToEdit.oauth.enabled}
-                isEdited={!(configToEdit.oauth.buttonText === config.oauth.buttonText)}
+                isEdited={configToEdit.oauth.buttonText !== config.oauth.buttonText}
+              />
+
+              <SettingInputField
+                inputType={SettingInputFieldType.TEXT}
+                label={$t('admin.oauth_account_management_url')}
+                description={$t('admin.oauth_account_management_url_description')}
+                bind:value={configToEdit.oauth.accountManagementUrl}
+                required={false}
+                disabled={disabled || !configToEdit.oauth.enabled}
+                isEdited={configToEdit.oauth.accountManagementUrl !== config.oauth.accountManagementUrl}
               />
 
               <SettingSwitch
@@ -282,10 +297,71 @@
                   bind:value={configToEdit.oauth.mobileRedirectUri}
                   required={true}
                   disabled={disabled || !configToEdit.oauth.enabled}
-                  isEdited={!(configToEdit.oauth.mobileRedirectUri === config.oauth.mobileRedirectUri)}
+                  isEdited={configToEdit.oauth.mobileRedirectUri !== config.oauth.mobileRedirectUri}
                 />
               {/if}
             {/if}
+          </div>
+        </SettingAccordion>
+
+        <SettingAccordion
+          key="passkey"
+          title={$t('admin.passkey_settings')}
+          subtitle={$t('admin.passkey_settings_description')}
+        >
+          <div class="ms-4 mt-4 flex flex-col gap-4">
+            <SettingSwitch
+              title={$t('admin.passkey_enable_description')}
+              {disabled}
+              bind:checked={configToEdit.passkey.enabled}
+            />
+
+            <hr />
+
+            <SettingInputField
+              inputType={SettingInputFieldType.TEXT}
+              label={$t('admin.passkey_domain')}
+              description={$t('admin.passkey_domain_description')}
+              placeholder="https://"
+              bind:value={
+                () => configToEdit.passkey.domain ?? '', (value) => (configToEdit.passkey.domain = value || null)
+              }
+              required={false}
+              disabled={disabled || !configToEdit.passkey.enabled}
+              isEdited={configToEdit.passkey.domain !== config.passkey.domain}
+            />
+
+            <div class="flex flex-col gap-2">
+              {#each configToEdit.passkey.additionalDomains as _, i (i)}
+                <SettingInputField
+                  inputType={SettingInputFieldType.TEXT}
+                  label={i === 0 ? $t('admin.passkey_additional_domains') : undefined}
+                  description={i === 0 ? $t('admin.passkey_additional_domains_description') : undefined}
+                  bind:value={configToEdit.passkey.additionalDomains[i]}
+                  disabled={disabled || !configToEdit.passkey.enabled}
+                >
+                  {#snippet trailingSnippet()}
+                    <IconButton
+                      aria-label=""
+                      onclick={() => configToEdit.passkey.additionalDomains.splice(i, 1)}
+                      icon={mdiTrashCanOutline}
+                      color="danger"
+                    />
+                  {/snippet}
+                </SettingInputField>
+              {/each}
+            </div>
+
+            <div class="flex justify-end">
+              <Button
+                class="mb-2"
+                size="small"
+                shape="round"
+                leadingIcon={mdiPlus}
+                onclick={() => void configToEdit.passkey.additionalDomains.push('')}
+                disabled={disabled || !configToEdit.passkey.enabled}>{$t('add_url')}</Button
+              >
+            </div>
           </div>
         </SettingAccordion>
 
@@ -305,7 +381,7 @@
           </div>
         </SettingAccordion>
 
-        <SettingButtonsRow bind:configToEdit keys={['passwordLogin', 'oauth']} {onBeforeSave} {disabled} />
+        <SettingButtonsRow bind:configToEdit keys={['passkey', 'passwordLogin', 'oauth']} {onBeforeSave} {disabled} />
       </div>
     </form>
   </div>

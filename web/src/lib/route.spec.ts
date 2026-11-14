@@ -1,5 +1,5 @@
-import { OpenQueryParam } from '$lib/constants';
-import { Route } from '$lib/route';
+import { OpenQueryParam } from '#lib/constants.ts';
+import { Route } from '#lib/route.ts';
 
 describe('Route', () => {
   describe(Route.login.name, () => {
@@ -11,11 +11,11 @@ describe('Route', () => {
   });
 
   describe(Route.search.name, () => {
-    it('should work', () => {
+    it('omits the query when the search terms are empty', () => {
       expect(Route.search({})).toBe('/search');
     });
 
-    it('should work', () => {
+    it('drops undefined terms from the query', () => {
       expect(Route.search({ make: undefined, model: 'Immich' })).toBe('/search?query=%7B%22model%22%3A%22Immich%22%7D');
     });
 
@@ -24,8 +24,22 @@ describe('Route', () => {
     });
   });
 
+  describe(Route.viewSharedLink.name, () => {
+    it('should work with key', () => {
+      expect(Route.viewSharedLink({ key: 'uuid-key' })).toBe('/share/uuid-key');
+    });
+
+    it('should work with key and slug', () => {
+      expect(Route.viewSharedLink({ key: 'uuid-key', slug: 'custom-slug' })).toBe('/s/custom-slug');
+    });
+
+    it('should URI encode slug', () => {
+      expect(Route.viewSharedLink({ key: 'uuid-key', slug: 'albums/the-moon?' })).toBe('/s/albums%2Fthe-moon%3F');
+    });
+  });
+
   describe(Route.tags.name, () => {
-    it('should work', () => {
+    it('links to the tag root', () => {
       expect(Route.tags()).toBe('/tags');
     });
 
@@ -39,12 +53,41 @@ describe('Route', () => {
   });
 
   describe(Route.systemSettings.name, () => {
-    it('should work', () => {
+    it('links to the settings page', () => {
       expect(Route.systemSettings()).toBe('/admin/system-settings');
     });
 
     it('should support query parameters', () => {
       expect(Route.systemSettings({ isOpen: OpenQueryParam.OAUTH })).toBe('/admin/system-settings?isOpen=oauth');
+    });
+  });
+
+  describe(Route.continue.name, () => {
+    it('should resolve relative URLs', () => {
+      expect(Route.continue('/some/path', '/fallback')).property('href', `${location.origin}/some/path`);
+    });
+
+    it('should resolve absolute URLs on the same origin', () => {
+      expect(Route.continue(`${location.origin}/some/path`, '/fallback')).property(
+        'href',
+        `${location.origin}/some/path`,
+      );
+    });
+
+    it('should return fallback for absolute URLs on a different origin', () => {
+      expect(Route.continue('https://malicious.site/evil', '/fallback')).toBe('/fallback');
+    });
+
+    it('should return fallback for null URLs', () => {
+      expect(Route.continue(null, '/fallback')).property('href', `${location.origin}/fallback`);
+    });
+
+    it('should block javascript: URLs', () => {
+      expect(Route.continue('javascript:alert(1)', '/fallback')).toBe('/fallback');
+    });
+
+    it(String.raw`should block \/ URLs`, () => {
+      expect(Route.continue(String.raw`\/malicious.com`, '/fallback')).toBe('/fallback');
     });
   });
 });

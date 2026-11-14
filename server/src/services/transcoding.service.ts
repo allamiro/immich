@@ -5,20 +5,21 @@ import {
   HLS_BACKPRESSURE_PAUSE_SEGMENTS,
   HLS_BACKPRESSURE_RESUME_SEGMENTS,
   HLS_CLEANUP_INTERVAL_MS,
+  HLS_CRF,
   HLS_INACTIVITY_TIMEOUT_MS,
   HLS_LEASE_DURATION_MS,
   HLS_SEGMENT_DURATION,
   HLS_SEGMENT_FILENAME_REGEX,
   HLS_VARIANTS,
-} from 'src/constants';
-import { StorageCore } from 'src/cores/storage.core';
-import { OnEvent, OnJob } from 'src/decorators';
-import { DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum';
-import { ArgOf } from 'src/repositories/event.repository';
-import { BaseService } from 'src/services/base.service';
-import { VideoInterfaces } from 'src/types';
-import { isVideoStreamSessionPkConstraint } from 'src/utils/database';
-import { BaseConfig } from 'src/utils/media';
+} from 'src/constants.js';
+import { StorageCore } from 'src/cores/storage.core.js';
+import { OnEvent, OnJob } from 'src/decorators.js';
+import { DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum.js';
+import type { ArgOf } from 'src/repositories/event.repository.js';
+import { BaseService } from 'src/services/base.service.js';
+import type { VideoInterfaces } from 'src/types.js';
+import { isVideoStreamSessionPkConstraint } from 'src/utils/database.js';
+import { BaseConfig } from 'src/utils/media.js';
 
 type Session = {
   assetId: string;
@@ -30,6 +31,7 @@ type Session = {
   ownerId: string;
   paused: boolean;
   process: ChildProcess | null;
+  starting: boolean;
   startSegment: number | null;
   variantIndex: number | null;
 };
@@ -52,7 +54,7 @@ export class TranscodingService extends BaseService {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
-    return Promise.all([...this.sessions.values()].map(({ id }) => this.onSessionEnd({ sessionId: id })));
+    return Promise.all(this.sessions.values().map(({ id }) => this.onSessionEnd({ sessionId: id })));
   }
 
   @OnJob({ name: JobName.HlsSessionCleanup, queue: QueueName.BackgroundTask })
@@ -75,6 +77,7 @@ export class TranscodingService extends BaseService {
         ownerId,
         paused: false,
         process: null,
+        starting: false,
         startSegment: null,
         variantIndex: null,
       });
@@ -120,6 +123,7 @@ export class TranscodingService extends BaseService {
     }
 
     const remaining = session.expiresAt.getTime() - Date.now();
+    // eslint-disable-next-line unicorn/prefer-early-return
     if (remaining < HLS_LEASE_DURATION_MS / 2) {
       session.expiresAt = new Date(Date.now() + HLS_LEASE_DURATION_MS);
       await this.videoStreamRepository.extendSession(sessionId, session.expiresAt);
@@ -136,20 +140,28 @@ export class TranscodingService extends BaseService {
     session.variantIndex ??= variantIndex;
     session.startSegment ??= segmentIndex;
     const curSegment = session.lastCompletedSegment === null ? session.startSegment : session.lastCompletedSegment + 1;
-    const needsRestart =
+    const isNeedsRestart =
       session.variantIndex !== variantIndex || segmentIndex < session.startSegment || segmentIndex > curSegment + 1;
-    if (needsRestart) {
+    if (isNeedsRestart) {
       this.stopTranscode(session);
       session.variantIndex = variantIndex;
       session.startSegment = segmentIndex;
     } else if (session.process) {
       this.resumeTranscode(session);
       return;
+    } else if (session.starting) {
+      this.logger.debug(`Session ${sessionId} is already starting a transcode, skipping duplicate start request`);
+      return;
     }
 
-    const process = await this.startTranscode(session, variantIndex, segmentIndex);
-    if (process) {
-      session.process = process;
+    session.starting = true;
+    try {
+      const process = await this.startTranscode(session, variantIndex, segmentIndex);
+      if (process) {
+        session.process = process;
+      }
+    } finally {
+      session.starting = false;
     }
   }
 
@@ -211,6 +223,7 @@ export class TranscodingService extends BaseService {
           targetResolution: String(variant.resolution),
           maxBitrate: `${Math.round(variant.bitrate / 1000)}k`,
           gopSize: gop,
+          crf: HLS_CRF[variant.codec],
         },
         this.videoInterfaces,
         { strictGop: true, lowLatency: true },
@@ -305,14 +318,17 @@ export class TranscodingService extends BaseService {
       session.paused = false;
       session.process = null;
       session.lastCompletedSegment = null;
-      if (code) {
-        this.logger.error(
-          `FFmpeg exited with code ${code} for variant ${variantIndex} asset ${session.assetId}\n${stderr}`,
-        );
-        void this.failSession(session, `Transcoding process exited unexpectedly with code ${code}`).catch((error) =>
-          this.logger.error(`Failed to end session ${session.id} after ffmpeg exit: ${error}`),
-        );
+
+      if (!code) {
+        return;
       }
+
+      this.logger.error(
+        `FFmpeg exited with code ${code} for variant ${variantIndex} asset ${session.assetId}\n${stderr}`,
+      );
+      void this.failSession(session, `Transcoding process exited unexpectedly with code ${code}`).catch((error) =>
+        this.logger.error(`Failed to end session ${session.id} after ffmpeg exit: ${error}`),
+      );
     });
   }
 
@@ -360,7 +376,7 @@ export class TranscodingService extends BaseService {
 
   private removeInactiveSessions() {
     const cutoff = Date.now() - HLS_INACTIVITY_TIMEOUT_MS;
-    const inactiveSessions = [...this.sessions.values()].filter((s) => s.lastActivityTime.getTime() < cutoff);
+    const inactiveSessions = this.sessions.values().filter((s) => s.lastActivityTime.getTime() < cutoff);
     return Promise.all(
       inactiveSessions.map(async (session) => {
         try {

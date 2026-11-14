@@ -1,7 +1,7 @@
-import { createZodDto } from 'nestjs-zod';
-import { QueueResponseDto, QueueStatisticsSchema } from 'src/dtos/queue.dto';
-import { QueueName } from 'src/enum';
 import z from 'zod';
+import { QueueResponseDto, QueueStatisticsSchema } from 'src/dtos/queue.dto.js';
+import { QueueName } from 'src/enum.js';
+import { createZodDto } from 'src/zod.js';
 
 const QueueStatusLegacySchema = z
   .object({
@@ -37,6 +37,7 @@ const QueuesResponseLegacySchema = z
     [QueueName.Ocr]: QueueResponseLegacySchema,
     [QueueName.Workflow]: QueueResponseLegacySchema,
     [QueueName.Editor]: QueueResponseLegacySchema,
+    [QueueName.IntegrityCheck]: QueueResponseLegacySchema,
   })
   .meta({ id: 'QueuesResponseLegacyDto' });
 

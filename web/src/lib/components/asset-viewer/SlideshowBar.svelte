@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { shortcuts, type ShortcutOptions } from '$lib/actions/shortcut';
-  import ProgressBar from '$lib/components/shared-components/progress-bar/ProgressBar.svelte';
-  import { ProgressBarStatus } from '$lib/constants';
-  import { languageManager } from '$lib/managers/language-manager.svelte';
-  import SlideshowSettingsModal from '$lib/modals/SlideshowSettingsModal.svelte';
-  import { SlideshowNavigation, slideshowStore } from '$lib/stores/slideshow.store';
+  import ProgressBar from '#lib/components/shared-components/progress-bar/ProgressBar.svelte';
+  import { ProgressBarStatus } from '#lib/constants.ts';
+  import { languageManager } from '#lib/managers/language-manager.svelte.ts';
+  import SlideshowSettingsModal from '#lib/modals/SlideshowSettingsModal.svelte';
+  import { SlideshowNavigation, SlideshowState, slideshowStore } from '#lib/stores/slideshow.store.ts';
   import { AssetTypeEnum } from '@immich/sdk';
-  import { IconButton, modalManager } from '@immich/ui';
+  import { IconButton, modalManager, shortcuts, type ShortcutOptions } from '@immich/ui';
   import { mdiChevronLeft, mdiChevronRight, mdiClose, mdiCog, mdiFullscreen, mdiPause, mdiPlay } from '@mdi/js';
   import { onDestroy, onMount } from 'svelte';
   import { useSwipe } from 'svelte-gestures';
@@ -31,8 +30,15 @@
     onSetToFullScreen = () => {},
   }: Props = $props();
 
-  const { restartProgress, stopProgress, slideshowDelay, showProgressBar, slideshowNavigation, slideshowAutoplay } =
-    slideshowStore;
+  const {
+    restartProgress,
+    stopProgress,
+    slideshowDelay,
+    showProgressBar,
+    slideshowNavigation,
+    slideshowState,
+    slideshowAutoplay,
+  } = slideshowStore;
 
   let progressBarStatus: ProgressBarStatus | undefined = $state();
   let progressBar = $state<ReturnType<typeof ProgressBar>>();
@@ -40,6 +46,7 @@
   let timer: NodeJS.Timeout;
   let isOverControls = $state(false);
   const isVideoSlide = $derived(assetType === AssetTypeEnum.Video);
+  const showPlayPause = $derived(!isVideoSlide && $slideshowAutoplay);
 
   let unsubscribeRestart: () => void;
   let unsubscribeStop: () => void;
@@ -61,10 +68,12 @@
 
   const hideControlsAfterDelay = () => {
     timer = setTimeout(() => {
-      if (!isOverControls) {
-        showControls = false;
-        setCursorStyle('none');
+      if (isOverControls) {
+        return;
       }
+
+      showControls = false;
+      setCursorStyle('none');
     }, 2500);
   };
 
@@ -77,10 +86,12 @@
     });
 
     unsubscribeStop = stopProgress.subscribe((value) => {
-      if (value) {
-        progressBar?.restart();
-        stopControlsHideTimer();
+      if (!value) {
+        return;
       }
+
+      progressBar?.restart();
+      stopControlsHideTimer();
     });
   });
 
@@ -139,6 +150,16 @@
     true,
   );
 
+  const togglePause = () => {
+    if (progressBarStatus === ProgressBarStatus.Paused) {
+      $slideshowState = SlideshowState.PlaySlideshow;
+      progressBar?.play();
+    } else {
+      $slideshowState = SlideshowState.PauseSlideshow;
+      progressBar?.pause();
+    }
+  };
+
   const shortcutBindings = $derived.by((): ShortcutOptions[] => {
     const bindings: ShortcutOptions[] = [
       { shortcut: { key: 'Escape' }, onShortcut: onClose },
@@ -147,16 +168,10 @@
     ];
 
     // For videos, allow the native HTML5 element to handle space for play/pause
-    if (!isVideoSlide) {
+    if (showPlayPause) {
       bindings.push({
         shortcut: { key: ' ' },
-        onShortcut: () => {
-          if (progressBarStatus === ProgressBarStatus.Paused) {
-            progressBar?.play();
-          } else {
-            progressBar?.pause();
-          }
-        },
+        onShortcut: togglePause,
         preventDefault: true,
       });
     }
@@ -165,14 +180,14 @@
   });
 </script>
 
-<svelte:document onmousemove={showControlBar} use:shortcuts={shortcutBindings} />
+<svelte:window onmousemove={showControlBar} {@attach shortcuts(shortcutBindings)} />
 
 {/* @ts-expect-error https://github.com/Rezi/svelte-gestures/issues/38#issuecomment-3315953573 */ null}
 <svelte:body {@attach swipe} {onswipe} {onswipedown} />
 
 {#if showControls}
   <div
-    class="dark m-4 flex gap-2"
+    class="dark m-4 flex gap-2 rounded-3xl bg-black/40 px-2 backdrop-blur-sm"
     onmouseenter={() => (isOverControls = true)}
     onmouseleave={() => (isOverControls = false)}
     transition:fly={{ duration: 150 }}
@@ -187,13 +202,13 @@
       aria-label={$t('exit_slideshow')}
     />
 
-    {#if !isVideoSlide}
+    {#if showPlayPause}
       <IconButton
         variant="ghost"
         shape="round"
         color="secondary"
         icon={progressBarStatus === ProgressBarStatus.Paused ? mdiPlay : mdiPause}
-        onclick={() => (progressBarStatus === ProgressBarStatus.Paused ? progressBar?.play() : progressBar?.pause())}
+        onclick={togglePause}
         aria-label={progressBarStatus === ProgressBarStatus.Paused ? $t('play') : $t('pause')}
       />
     {/if}
@@ -236,7 +251,7 @@
 
 {#if !isVideoSlide}
   <ProgressBar
-    autoplay={$slideshowAutoplay}
+    autoplay={$slideshowState === SlideshowState.PlaySlideshow}
     hidden={!$showProgressBar}
     duration={$slideshowDelay}
     bind:this={progressBar}

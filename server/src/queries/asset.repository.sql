@@ -192,7 +192,8 @@ select
             from
               "person"
             where
-              "asset_face"."personId" = "person"."id"
+              "person"."personGroupId" = "asset_face"."personGroupId"
+              and "person"."ownerId" = "asset"."ownerId"
           ) as "person" on true
         where
           "asset_face"."assetId" = "asset"."id"
@@ -339,6 +340,22 @@ where
 limit
   $3
 
+-- AssetRepository.getCalendarHeatmap
+select
+  date_trunc('DAY', "asset"."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' as "date",
+  count(*) as "count"
+from
+  "asset"
+where
+  "ownerId" = $1::uuid
+  and "createdAt" >= $2
+  and "createdAt" < $3
+  and "deletedAt" is null
+group by
+  date_trunc('DAY', "asset"."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+order by
+  "date" asc
+
 -- AssetRepository.getTimeBuckets
 with
   "asset" as (
@@ -428,7 +445,8 @@ with
       )
     order by
       (asset."localDateTime" AT TIME ZONE 'UTC')::date desc,
-      "asset"."fileCreatedAt" desc
+      "asset"."fileCreatedAt" desc,
+      "asset"."originalFileName" desc
   ),
   "agg" as (
     select
@@ -504,18 +522,22 @@ limit
   $4
 
 -- AssetRepository.detectOfflineExternalAssets
-update "asset"
-set
-  "isOffline" = $1,
-  "deletedAt" = $2
-where
-  "isOffline" = $3
-  and "isExternal" = $4
-  and "libraryId" = $5::uuid
-  and (
-    not "originalPath" like $6
-    or "originalPath" like $7
-  )
+begin
+declare offline_check no scroll cursor for (
+  select
+    "asset"."id",
+    "asset"."originalPath"
+  from
+    "asset"
+  where
+    "asset"."libraryId" = $1::uuid
+    and "asset"."isOffline" = $2
+    and "asset"."isExternal" = $3
+)
+fetch 10000
+from
+  offline_check
+commit
 
 -- AssetRepository.filterNewExternalAssetPaths
 select

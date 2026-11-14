@@ -1,3 +1,4 @@
+import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/utils/event_stream.dart';
 
 // Timeline Events
@@ -20,8 +21,10 @@ class ViewerShowDetailsEvent extends Event {
   const ViewerShowDetailsEvent();
 }
 
-class ViewerReloadAssetEvent extends Event {
-  const ViewerReloadAssetEvent();
+class ViewerClosedEvent extends Event {
+  final BaseAsset asset;
+
+  const ViewerClosedEvent(this.asset);
 }
 
 // Multi-Select Events

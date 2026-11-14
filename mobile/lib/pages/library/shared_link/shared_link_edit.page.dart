@@ -6,12 +6,13 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
+import 'package:immich_mobile/extensions/datetime_extensions.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/models/shared_link/shared_link.model.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/providers/shared_link.provider.dart';
 import 'package:immich_mobile/services/shared_link.service.dart';
-import 'package:openapi/api.dart';
+import 'package:immich_mobile/utils/option.dart';
 import 'package:immich_mobile/utils/url_helper.dart';
 import 'package:immich_mobile/widgets/common/confirm_dialog.dart';
 import 'package:immich_mobile/widgets/common/immich_toast.dart';
@@ -132,10 +133,10 @@ class SharedLinkEditPage extends HookConsumerWidget {
         textInputAction: TextInputAction.done,
         autofocus: false,
         decoration: InputDecoration(
-          labelText: slugController.text.isNotEmpty ? context.t.custom_url : null,
+          labelText: slugController.text.isNotEmpty ? context.t.shared_link_custom_url_title : null,
           labelStyle: const TextStyle(fontWeight: FontWeight.bold),
           border: const OutlineInputBorder(),
-          hintText: context.t.custom_url,
+          hintText: context.t.shared_link_custom_url_title,
           prefixText: slugController.text.isNotEmpty ? '/s/' : null,
           prefixStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
         ),
@@ -157,8 +158,8 @@ class SharedLinkEditPage extends HookConsumerWidget {
 
     Widget buildAllowDownloadButton() {
       return SwitchListTile.adaptive(
-        value: allowDownload.value,
-        onChanged: (value) => allowDownload.value = value,
+        value: allowDownload.value && showMetadata.value,
+        onChanged: showMetadata.value ? (value) => allowDownload.value = value : null,
         dense: true,
         title: Text(
           context.t.allow_public_user_to_download,
@@ -179,7 +180,7 @@ class SharedLinkEditPage extends HookConsumerWidget {
       );
     }
 
-    String formatDateTime(DateTime dateTime) => DateFormat.yMMMd(context.locale.toString()).add_Hm().format(dateTime);
+    String formatDateTime(DateTime dateTime) => DateFormat.yMMMd(resolvedDateTimeLocale()).add_Hm().format(dateTime);
 
     DateTime? getExpiresAtFromPreset(Duration preset) => preset == Duration.zero ? null : DateTime.now().add(preset);
 
@@ -366,10 +367,10 @@ class SharedLinkEditPage extends HookConsumerWidget {
       bool? download;
       bool? upload;
       bool? meta;
-      var password = const Optional<String?>.absent();
-      var description = const Optional<String?>.absent();
+      var password = const Option<String?>.none();
+      var description = const Option<String?>.none();
       String? slug;
-      var expiry = const Optional<DateTime?>.absent();
+      var expiry = const Option<DateTime?>.none();
 
       if (allowDownload.value != existingLink!.allowDownload) {
         download = allowDownload.value;
@@ -385,14 +386,12 @@ class SharedLinkEditPage extends HookConsumerWidget {
 
       if (descriptionController.text != (existingLink!.description ?? '')) {
         description = descriptionController.text.isEmpty
-            ? const Optional.present(null)
-            : Optional.present(descriptionController.text);
+            ? const Option.some(null)
+            : Option.some(descriptionController.text);
       }
 
       if (passwordController.text != (existingLink!.password ?? '')) {
-        password = passwordController.text.isEmpty
-            ? const Optional.present(null)
-            : Optional.present(passwordController.text);
+        password = passwordController.text.isEmpty ? const Option.some(null) : Option.some(passwordController.text);
       }
 
       if (slugController.text != (existingLink!.slug ?? "")) {
@@ -403,7 +402,7 @@ class SharedLinkEditPage extends HookConsumerWidget {
 
       final newExpiry = expiryAfter.value;
       if (newExpiry?.toUtc() != existingLink!.expiresAt?.toUtc()) {
-        expiry = newExpiry == null ? const Optional.present(null) : Optional.present(newExpiry.toUtc());
+        expiry = newExpiry == null ? const Option.some(null) : Option.some(newExpiry.toUtc());
       }
 
       await ref
@@ -429,8 +428,8 @@ class SharedLinkEditPage extends HookConsumerWidget {
       return showDialog(
         context: context,
         builder: (BuildContext context) => ConfirmDialog(
-          title: "delete_shared_link_dialog_title",
-          content: "confirm_delete_shared_link",
+          title: context.t.delete_shared_link_dialog_title,
+          content: context.t.confirm_delete_shared_link,
           onOk: () async {
             await ref.read(sharedLinkServiceProvider).deleteSharedLink(existingLink!.id);
             ref.invalidate(sharedLinksStateProvider);

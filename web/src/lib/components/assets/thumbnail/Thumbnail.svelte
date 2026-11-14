@@ -1,13 +1,14 @@
 <script lang="ts">
-  import { ProjectionType } from '$lib/constants';
-  import { authManager } from '$lib/managers/auth-manager.svelte';
-  import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
-  import { mediaQueryManager } from '$lib/stores/media-query-manager.svelte';
-  import { locale, playVideoThumbnailOnHover } from '$lib/stores/preferences.store';
-  import { getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
-  import { moveFocus } from '$lib/utils/focus-util';
-  import { currentUrlReplaceAssetId } from '$lib/utils/navigation';
-  import { getAltText } from '$lib/utils/thumbnail-util';
+  import Thumbhash from '#lib/components/Thumbhash.svelte';
+  import { ProjectionType } from '#lib/constants.ts';
+  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
+  import { mediaQueryManager } from '#lib/stores/media-query-manager.svelte.ts';
+  import { locale, playVideoThumbnailOnHover } from '#lib/stores/preferences.store.ts';
+  import { getAssetMediaUrl, getAssetPlaybackUrl } from '#lib/utils.ts';
+  import { moveFocus } from '#lib/utils/focus-util.ts';
+  import { currentUrlReplaceAssetId } from '#lib/utils/navigation.ts';
+  import { getAltText } from '#lib/utils/thumbnail-util.ts';
   import { AssetMediaSize, AssetVisibility, type UserResponseDto } from '@immich/sdk';
   import { Icon } from '@immich/ui';
   import {
@@ -24,9 +25,9 @@
   import { onMount } from 'svelte';
   import type { ClassValue } from 'svelte/elements';
   import { fade } from 'svelte/transition';
-  import Thumbhash from '$lib/components/Thumbhash.svelte';
   import ImageThumbnail from './ImageThumbnail.svelte';
   import VideoThumbnail from './VideoThumbnail.svelte';
+
   interface Props {
     asset: TimelineAsset;
     groupIndex?: number;
@@ -42,7 +43,6 @@
     showStackedIcon?: boolean;
     imageClass?: ClassValue;
     brokenAssetClass?: ClassValue;
-    dimmed?: boolean;
     albumUsers?: UserResponseDto[];
     onClick?: (asset: TimelineAsset) => void;
     onPreview?: (asset: TimelineAsset) => void;
@@ -70,7 +70,6 @@
     onMouseEvent = undefined,
     imageClass = '',
     brokenAssetClass = '',
-    dimmed = false,
   }: Props = $props();
 
   let usingMobileDevice = $derived(mediaQueryManager.pointerCoarse);
@@ -145,36 +144,36 @@
   let startX: number = 0;
   let startY: number = 0;
 
-  function longPress(element: HTMLElement, { onLongPress }: { onLongPress: () => void }) {
-    let didPress = false;
-    const start = (evt: PointerEvent) => {
-      startX = evt.clientX;
-      startY = evt.clientY;
-      didPress = false;
-      // 350ms for longpress. For reference: iOS uses 500ms for default long press, or 200ms for fast long press.
-      timer = setTimeout(() => {
-        onLongPress();
-        element.addEventListener('contextmenu', preventContextMenu, { once: true });
-        disposeables.push(() => element.removeEventListener('contextmenu', preventContextMenu));
-        didPress = true;
-      }, 350);
-    };
-    const click = (e: MouseEvent) => {
-      if (!didPress) {
-        return;
-      }
-      e.stopPropagation();
-      e.preventDefault();
-    };
-    element.addEventListener('click', click);
-    element.addEventListener('pointerdown', start, true);
-    element.addEventListener('pointerup', clearLongPressTimer, { capture: true, passive: true });
-    return {
-      destroy: () => {
+  function longPress({ onLongPress }: { onLongPress: () => void }) {
+    return (element: HTMLElement) => {
+      let didPress = false;
+      const start = (evt: PointerEvent) => {
+        startX = evt.clientX;
+        startY = evt.clientY;
+        didPress = false;
+        // 350ms for longpress. For reference: iOS uses 500ms for default long press, or 200ms for fast long press.
+        timer = setTimeout(() => {
+          onLongPress();
+          element.addEventListener('contextmenu', preventContextMenu, { once: true });
+          disposeables.push(() => element.removeEventListener('contextmenu', preventContextMenu));
+          didPress = true;
+        }, 350);
+      };
+      const click = (e: MouseEvent) => {
+        if (!didPress) {
+          return;
+        }
+        e.stopPropagation();
+        e.preventDefault();
+      };
+      element.addEventListener('click', click);
+      element.addEventListener('pointerdown', start, { capture: true });
+      element.addEventListener('pointerup', clearLongPressTimer, { capture: true, passive: true });
+      return () => {
         element.removeEventListener('click', click);
         element.removeEventListener('pointerdown', start, true);
         element.removeEventListener('pointerup', clearLongPressTimer, true);
-      },
+      };
     };
   }
   function moveHandler(e: PointerEvent) {
@@ -206,17 +205,21 @@
 </script>
 
 <div
-  class={['group flex overflow-hidden focus-visible:outline-none', backgroundColorClass, { 'rounded-xl': selected }]}
+  class={[
+    'group flex overflow-hidden focus-visible:outline-none',
+    backgroundColorClass,
+    { 'rounded-xl': selected },
+    disabled ? 'cursor-not-allowed' : 'cursor-pointer',
+  ]}
   style:width="{width}px"
   style:height="{height}px"
   onmouseenter={onMouseEnter}
   onmouseleave={onMouseLeave}
-  use:longPress={{ onLongPress: () => onSelect?.($state.snapshot(asset)) }}
+  {@attach longPress({ onLongPress: () => onSelect?.($state.snapshot(asset)) })}
   onkeydown={(evt) => {
     if (evt.key === 'Enter') {
       callClickHandlers();
-    }
-    if (evt.key === 'x') {
+    } else if (evt.key === 'x') {
       onSelect?.(asset);
     }
     if (document.activeElement === element && evt.key === 'Escape') {
@@ -227,27 +230,17 @@
   bind:this={element}
   data-asset={asset.id}
   data-thumbnail-focus-container
-  data-selected={selected ? true : undefined}
-  data-readonly={readonly ? true : undefined}
-  data-disabled={disabled ? true : undefined}
+  data-selected={selected || undefined}
+  data-readonly={readonly || undefined}
+  data-disabled={disabled || undefined}
   tabindex={0}
   role="link"
 >
-  <div
-    class={['group absolute inset-y-0', { 'cursor-not-allowed': disabled, 'cursor-pointer': !disabled }]}
-    style:width="inherit"
-    style:height="inherit"
-  >
-    <div
-      class={[
-        'absolute size-full bg-transparent transition-transform select-none',
-        { 'scale-[0.85]': selected },
-        { 'rounded-xl': selected },
-      ]}
-    >
+  <div class="group absolute inset-y-0" style:width="inherit" style:height="inherit">
+    <div class={['absolute size-full bg-transparent transition-transform select-none', { 'scale-[0.85]': selected }]}>
       <ImageThumbnail
-        class={['absolute group-focus-visible:rounded-lg', { 'rounded-xl': selected }, imageClass]}
-        brokenAssetClass={['z-1 absolute group-focus-visible:rounded-lg', { 'rounded-xl': selected }, brokenAssetClass]}
+        class={['absolute group-focus-visible:rounded-lg', imageClass]}
+        brokenAssetClass={['z-1 absolute group-focus-visible:rounded-lg', brokenAssetClass]}
         url={getAssetMediaUrl({ id: asset.id, size: AssetMediaSize.Thumbnail, cacheKey: asset.thumbhash })}
         altText={$getAltText(asset)}
         widthStyle="{width}px"
@@ -325,24 +318,16 @@
           ></div>
         {/if}
 
-        <!-- Dimmed support -->
-        {#if dimmed && !mouseOver}
-          <div
-            id="a"
-            class={['absolute z-2 size-full bg-gray-700/40 group-focus-visible:rounded-lg', { 'rounded-xl': selected }]}
-          ></div>
-        {/if}
-
         <!-- Favorite asset star -->
         {#if !authManager.isSharedLink && asset.isFavorite}
           <div class="absolute inset-s-2 bottom-2 z-2">
-            <Icon data-icon-favorite icon={mdiHeart} size="24" class="text-white" />
+            <Icon data-testid="favorite-icon" icon={mdiHeart} size="24" class="text-white" />
           </div>
         {/if}
 
         {#if !!assetOwner}
           <div class="absolute inset-e-2 bottom-1 z-2 max-w-[50%]">
-            <p class="max-w-full truncate text-xs font-medium text-white drop-shadow-lg">
+            <p class="text-white-shadow max-w-full truncate p-1 text-xs font-medium text-white">
               {assetOwner.name}
             </p>
           </div>
@@ -350,7 +335,7 @@
 
         {#if !authManager.isSharedLink && showArchiveIcon && asset.visibility === AssetVisibility.Archive}
           <div class={['absolute inset-s-2 z-2', asset.isFavorite ? 'bottom-10' : 'bottom-2']}>
-            <Icon data-icon-archive icon={mdiArchiveArrowDownOutline} size="24" class="text-white" />
+            <Icon data-testid="archive-icon" icon={mdiArchiveArrowDownOutline} size="24" class="text-white" />
           </div>
         {/if}
 
@@ -373,15 +358,14 @@
         <!-- Stacked asset -->
         {#if asset.stack && showStackedIcon}
           <div
+            data-testid="stack-icon"
             class={[
-              'absolute z-2 flex place-items-center gap-1 text-xs font-medium text-white',
+              'absolute z-2 flex place-items-center gap-1 pe-2 pt-2 text-xs font-medium text-white',
               asset.isImage && !asset.livePhotoVideoId ? 'inset-e-0 top-0' : 'inset-e-1 top-7',
             ]}
           >
-            <span class="flex place-items-center gap-1 pe-2 pt-2">
-              <p>{asset.stack.assetCount.toLocaleString($locale)}</p>
-              <Icon icon={mdiCameraBurst} size="24" />
-            </span>
+            <p>{asset.stack.assetCount.toLocaleString($locale)}</p>
+            <Icon icon={mdiCameraBurst} size="24" />
           </div>
         {/if}
       </div>
@@ -402,6 +386,7 @@
 
     {#if selectionCandidate}
       <div
+        data-testid="selection-candidate"
         class={['absolute top-0 z-2 size-full bg-immich-primary opacity-40', { 'rounded-xl': selected }]}
         in:fade={{ duration: 100 }}
         out:fade={{ duration: 100 }}
@@ -413,20 +398,20 @@
       <button
         type="button"
         onclick={onIconClickedHandler}
-        class={['absolute z-2 p-2 focus:outline-none', { 'cursor-not-allowed': disabled }]}
+        class={['group/select absolute z-2 p-2 focus:outline-none', { 'cursor-not-allowed': disabled }]}
         role="checkbox"
         tabindex={-1}
         aria-checked={selected}
         {disabled}
       >
         {#if disabled}
-          <Icon data-icon-select icon={mdiCheckCircle} size="24" class="text-zinc-800" />
+          <Icon icon={mdiCheckCircle} size="24" class="text-zinc-800" />
         {:else if selected}
           <div class="rounded-full bg-[#D9DCEF] dark:bg-[#232932]">
-            <Icon data-icon-select icon={mdiCheckCircle} size="24" class="text-primary" />
+            <Icon icon={mdiCheckCircle} size="24" class="text-primary" />
           </div>
         {:else}
-          <Icon data-icon-select icon={mdiCheckCircle} size="24" class="text-white/80 hover:text-white" />
+          <Icon icon={mdiCheckCircle} size="24" class="text-white/80 group-hover/select:text-white" />
         {/if}
       </button>
     {/if}

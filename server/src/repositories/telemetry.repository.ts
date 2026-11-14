@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { MetricOptions } from '@opentelemetry/api';
+import { MetricOptions, ValueType } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
@@ -9,15 +9,15 @@ import { NestInstrumentation } from '@opentelemetry/instrumentation-nestjs-core'
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { AggregationType } from '@opentelemetry/sdk-metrics';
-import { NodeSDK, contextBase } from '@opentelemetry/sdk-node';
+import { NodeSDK } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
-import { snakeCase, startCase } from 'lodash';
+import { snakeCase, startCase } from 'lodash-es';
 import { MetricService } from 'nestjs-otel';
-import { copyMetadataFromFunctionToFunction } from 'nestjs-otel/lib/opentelemetry.utils';
-import { excludePaths, serverVersion } from 'src/constants';
-import { ImmichTelemetry, MetadataKey } from 'src/enum';
-import { ConfigRepository } from 'src/repositories/config.repository';
-import { LoggingRepository } from 'src/repositories/logging.repository';
+import { copyMetadataFromFunctionToFunction } from 'nestjs-otel/lib/opentelemetry.utils.js';
+import { excludePaths, serverVersion } from 'src/constants.js';
+import { ImmichTelemetry, MetadataKey } from 'src/enum.js';
+import { ConfigRepository } from 'src/repositories/config.repository.js';
+import { LoggingRepository } from 'src/repositories/logging.repository.js';
 
 type MetricGroupOptions = { enabled: boolean };
 
@@ -68,7 +68,7 @@ export const bootstrapTelemetry = (port: number) => {
       [ATTR_SERVICE_NAME]: `immich`,
       [ATTR_SERVICE_VERSION]: serverVersion.toString(),
     }),
-    metricReader: new PrometheusExporter({ port }),
+    metricReaders: [new PrometheusExporter({ port, host: '0.0.0.0' })],
     contextManager: new AsyncLocalStorageContextManager(),
     instrumentations: [
       new HttpInstrumentation({
@@ -95,10 +95,12 @@ export const bootstrapTelemetry = (port: number) => {
 };
 
 export const teardownTelemetry = async () => {
-  if (instance) {
-    await instance.shutdown();
-    instance = undefined;
+  if (!instance) {
+    return;
   }
+
+  await instance.shutdown();
+  instance = undefined;
 };
 
 @Injectable()
@@ -147,24 +149,25 @@ export class TelemetryRepository {
     const unit = 'ms';
 
     for (const [propName, descriptor] of Object.entries(descriptors)) {
-      const isMethod = typeof descriptor.value == 'function' && propName !== 'constructor';
+      const isMethod = typeof descriptor.value === 'function' && propName !== 'constructor';
       if (!isMethod) {
         continue;
       }
 
       const method = descriptor.value;
-      const propertyName = snakeCase(String(propName));
+      const propertyName = snakeCase(propName);
       const metricName = `${snakeCase(className).replaceAll(/_(?=(repository)|(controller)|(provider)|(service)|(module))/g, '.')}.${propertyName}.duration`;
 
       const histogram = this.metricService.getHistogram(metricName, {
         prefix: 'immich',
         description: `The elapsed time in ${unit} for the ${startCase(className)} to ${propertyName.toLowerCase()}`,
         unit,
-        valueType: contextBase.ValueType.DOUBLE,
+        valueType: ValueType.DOUBLE,
       });
 
       descriptor.value = function (...args: any[]) {
         const start = performance.now();
+        // eslint-disable-next-line unicorn/no-this-outside-of-class
         const result = method.apply(this, args);
 
         void Promise.resolve(result)

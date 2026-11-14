@@ -1,26 +1,29 @@
 import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { PostgresError } from 'postgres';
-import { AssetIdErrorReason, AssetIdsResponseDto } from 'src/dtos/asset-ids.response.dto';
-import { AssetIdsDto } from 'src/dtos/asset.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
+import { SharedLink } from 'src/database.js';
+import { AssetIdErrorReason, AssetIdsResponseDto } from 'src/dtos/asset-ids.response.dto.js';
+import { AssetIdsDto } from 'src/dtos/asset.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import {
-  mapSharedLink,
   SharedLinkCreateDto,
   SharedLinkEditDto,
   SharedLinkLoginDto,
   SharedLinkResponseDto,
   SharedLinkSearchDto,
-} from 'src/dtos/shared-link.dto';
-import { Permission, SharedLinkType } from 'src/enum';
-import { BaseService } from 'src/services/base.service';
-import { getExternalDomain, OpenGraphTags } from 'src/utils/misc';
+  mapSharedLink,
+} from 'src/dtos/shared-link.dto.js';
+import { Permission, SharedLinkType } from 'src/enum.js';
+import { BaseService } from 'src/services/base.service.js';
+import { asDateTimeString } from 'src/utils/date.js';
+import { OpenGraphTags, findOrFail, getExternalDomain } from 'src/utils/misc.js';
 
 @Injectable()
 export class SharedLinkService extends BaseService {
   async getAll(auth: AuthDto, { id, albumId }: SharedLinkSearchDto): Promise<SharedLinkResponseDto[]> {
     return this.sharedLinkRepository
       .getAll({ userId: auth.user.id, id, albumId })
-      .then((links) => links.map((link) => mapSharedLink(link, { stripAssetMetadata: false })));
+
+      .then((links) => links.map((link) => mapSharedLink(link, { auth })));
   }
 
   async login(auth: AuthDto, dto: SharedLinkLoginDto) {
@@ -40,7 +43,7 @@ export class SharedLinkService extends BaseService {
     }
 
     return {
-      sharedLink: mapSharedLink(sharedLink, { stripAssetMetadata: !sharedLink.showExif }),
+      sharedLink: await this.mapWithAlbumMetadata(sharedLink, { auth }),
       token: this.asToken({ id, password }),
     };
   }
@@ -57,12 +60,12 @@ export class SharedLinkService extends BaseService {
       throw new UnauthorizedException('Password required');
     }
 
-    return mapSharedLink(sharedLink, { stripAssetMetadata: !sharedLink.showExif });
+    return this.mapWithAlbumMetadata(sharedLink, { auth });
   }
 
   async get(auth: AuthDto, id: string): Promise<SharedLinkResponseDto> {
     const sharedLink = await this.findOrFail(auth.user.id, id);
-    return mapSharedLink(sharedLink, { stripAssetMetadata: false });
+    return this.mapWithAlbumMetadata(sharedLink, { auth });
   }
 
   async create(auth: AuthDto, dto: SharedLinkCreateDto): Promise<SharedLinkResponseDto> {
@@ -97,12 +100,12 @@ export class SharedLinkService extends BaseService {
         password: dto.password,
         expiresAt: dto.expiresAt || null,
         allowUpload: dto.allowUpload ?? true,
-        allowDownload: dto.showMetadata === false ? false : (dto.allowDownload ?? true),
+        allowDownload: dto.showMetadata !== false && (dto.allowDownload ?? true),
         showExif: dto.showMetadata ?? true,
         slug: dto.slug || null,
       });
 
-      return mapSharedLink(sharedLink, { stripAssetMetadata: false });
+      return mapSharedLink(sharedLink, { auth });
     } catch (error) {
       this.handleError(error);
     }
@@ -130,7 +133,7 @@ export class SharedLinkService extends BaseService {
         showExif: dto.showMetadata,
         slug: dto.slug || null,
       });
-      return mapSharedLink(sharedLink, { stripAssetMetadata: false });
+      return mapSharedLink(sharedLink, { auth });
     } catch (error) {
       this.handleError(error);
     }
@@ -142,12 +145,8 @@ export class SharedLinkService extends BaseService {
   }
 
   // TODO: replace `userId` with permissions and access control checks
-  private async findOrFail(userId: string, id: string) {
-    const sharedLink = await this.sharedLinkRepository.get(userId, id);
-    if (!sharedLink) {
-      throw new BadRequestException('Shared link not found');
-    }
-    return sharedLink;
+  private findOrFail(userId: string, id: string) {
+    return findOrFail(() => this.sharedLinkRepository.get(userId, id), 'Shared link');
   }
 
   async addAssets(auth: AuthDto, id: string, dto: AssetIdsDto): Promise<AssetIdsResponseDto[]> {
@@ -200,7 +199,7 @@ export class SharedLinkService extends BaseService {
 
     const results: AssetIdsResponseDto[] = [];
     for (const assetId of dto.assetIds) {
-      const wasRemoved = removedAssetIds.find((id) => id === assetId);
+      const wasRemoved = removedAssetIds.includes(assetId);
       if (!wasRemoved) {
         results.push({ assetId, success: false, error: AssetIdErrorReason.NOT_FOUND });
         continue;
@@ -223,7 +222,8 @@ export class SharedLinkService extends BaseService {
     const config = await this.getConfig({ withCache: true });
     const sharedLink = await this.findOrFail(auth.sharedLink.userId, auth.sharedLink.id);
     const assetId = sharedLink.album?.albumThumbnailAssetId || sharedLink.assets[0]?.id;
-    const assetCount = sharedLink.assets.length > 0 ? sharedLink.assets.length : sharedLink.album?.assets?.length || 0;
+    const [albumMetadata] = sharedLink.album ? await this.albumRepository.getMetadataForIds([sharedLink.album.id]) : [];
+    const assetCount = sharedLink.assets.length > 0 ? sharedLink.assets.length : albumMetadata?.assetCount || 0;
     const imagePath = assetId
       ? `/api/assets/${assetId}/thumbnail?key=${sharedLink.key.toString('base64url')}`
       : '/feature-panel.png';
@@ -233,6 +233,18 @@ export class SharedLinkService extends BaseService {
       description: sharedLink.description || `${assetCount} shared photos & videos`,
       imageUrl: new URL(imagePath, getExternalDomain(config.server, defaultDomain)).href,
     };
+  }
+
+  private async mapWithAlbumMetadata(sharedLink: SharedLink, { auth }: { auth: AuthDto }) {
+    const response = mapSharedLink(sharedLink, { auth });
+    if (response.album) {
+      const [metadata] = await this.albumRepository.getMetadataForIds([response.album.id]);
+      response.album.startDate = asDateTimeString(metadata?.startDate ?? undefined);
+      response.album.endDate = asDateTimeString(metadata?.endDate ?? undefined);
+      response.album.assetCount = metadata?.assetCount ?? 0;
+    }
+
+    return response;
   }
 
   private asToken(sharedLink: { id: string; password: string }) {

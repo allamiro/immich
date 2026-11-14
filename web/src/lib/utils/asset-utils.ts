@@ -1,77 +1,32 @@
+import type { AssetMultiSelectManager } from '#lib/managers/asset-multi-select-manager.svelte.ts';
+import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+import { downloadManager } from '#lib/managers/download-manager.svelte.ts';
+import { eventManager } from '#lib/managers/event-manager.svelte.ts';
+import { TimelineManager } from '#lib/managers/timeline-manager/timeline-manager.svelte.ts';
+import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
+import { locale } from '#lib/stores/preferences.store.ts';
+import { downloadUrlPost, withError } from '#lib/utils.ts';
+import { getByteUnitString } from '#lib/utils/byte-units.ts';
+import { getFormatter } from '#lib/utils/i18n.ts';
+import { navigate } from '#lib/utils/navigation.ts';
+import { asQueryString } from '#lib/utils/shared-links.ts';
+import { toTimelineAsset } from '#lib/utils/timeline-util.ts';
 import {
   AssetVisibility,
-  bulkTagAssets,
-  createStack,
-  deleteAssets,
-  deleteStacks,
   getBaseUrl,
   getDownloadInfo,
-  getStack,
-  untagAssets,
   updateAsset,
   updateAssets,
   type AssetResponseDto,
-  type AssetTypeEnum,
   type DownloadInfoDto,
   type ExifResponseDto,
-  type StackResponseDto,
   type UserResponseDto,
 } from '@immich/sdk';
 import { toastManager } from '@immich/ui';
 import { DateTime } from 'luxon';
 import { t } from 'svelte-i18n';
 import { get } from 'svelte/store';
-import type { AssetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
-import { authManager } from '$lib/managers/auth-manager.svelte';
-import { downloadManager } from '$lib/managers/download-manager.svelte';
-import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
-import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
-import { downloadBlob, downloadRequest, withError } from '$lib/utils';
-import { getByteUnitString } from '$lib/utils/byte-units';
-import { getFormatter } from '$lib/utils/i18n';
-import { navigate } from '$lib/utils/navigation';
-import { asQueryString } from '$lib/utils/shared-links';
 import { handleError } from './handle-error';
-
-export const tagAssets = async ({
-  assetIds,
-  tagIds,
-  showNotification = true,
-}: {
-  assetIds: string[];
-  tagIds: string[];
-  showNotification?: boolean;
-}) => {
-  await bulkTagAssets({ tagBulkAssetsDto: { tagIds, assetIds } });
-
-  if (showNotification) {
-    const $t = await getFormatter();
-    toastManager.primary($t('tagged_assets', { values: { count: assetIds.length } }));
-  }
-
-  return assetIds;
-};
-
-export const removeTag = async ({
-  assetIds,
-  tagIds,
-  showNotification = true,
-}: {
-  assetIds: string[];
-  tagIds: string[];
-  showNotification?: boolean;
-}) => {
-  for (const tagId of tagIds) {
-    await untagAssets({ id: tagId, bulkIdsDto: { ids: assetIds } });
-  }
-
-  if (showNotification) {
-    const $t = await getFormatter();
-    toastManager.primary($t('removed_tagged_assets', { values: { count: assetIds.length } }));
-  }
-
-  return assetIds;
-};
 
 export const downloadArchive = async (fileName: string, options: Omit<DownloadInfoDto, 'archiveSize'>) => {
   const archiveSize = authManager.authenticated ? authManager.preferences.download.archiveSize : undefined;
@@ -90,66 +45,63 @@ export const downloadArchive = async (fileName: string, options: Omit<DownloadIn
   for (let index = 0; index < downloadInfo.archives.length; index++) {
     const archive = downloadInfo.archives[index];
     const suffix = downloadInfo.archives.length > 1 ? `+${index + 1}` : '';
-    const archiveName = fileName.replace('.zip', `${suffix}-${DateTime.now().toFormat('yyyyLLdd_HHmmss')}.zip`);
+    const archiveName = `${fileName}${suffix}-${DateTime.now().toFormat('yyyyLLdd_HHmmss')}`;
     const queryParams = asQueryString(authManager.params);
 
-    let downloadKey = `${archiveName} `;
-    if (downloadInfo.archives.length > 1) {
-      downloadKey = `${archiveName} (${index + 1}/${downloadInfo.archives.length})`;
-    }
+    const downloadKey =
+      downloadInfo.archives.length > 1
+        ? `${archiveName} (${index + 1}/${downloadInfo.archives.length})`
+        : `${archiveName} `;
 
-    const abort = new AbortController();
-    downloadManager.add(downloadKey, archive.size, abort);
+    const url = getBaseUrl() + '/download/archive' + (queryParams ? `?${queryParams}` : '');
 
     try {
-      // TODO use sdk once it supports progress events
-      const { data } = await downloadRequest({
-        method: 'POST',
-        url: getBaseUrl() + '/download/archive' + (queryParams ? `?${queryParams}` : ''),
-        data: { assetIds: archive.assetIds, edited: true },
-        signal: abort.signal,
-        onDownloadProgress: (event) => downloadManager.update(downloadKey, event.loaded),
-      });
-
-      downloadBlob(data, archiveName);
+      if (downloadInfo.archives.length > 1) {
+        downloadManager.add(downloadKey, url, archive.assetIds, archiveName, archive.size);
+      } else {
+        downloadUrlPost(url, archive.assetIds, archiveName);
+        const $t = await getFormatter();
+        const $locale = get(locale);
+        toastManager.primary(
+          $t('downloading_archive_filename_size', {
+            values: { size: getByteUnitString(archive.size, $locale), filename: archiveName },
+          }),
+          { timeout: 10_000 },
+        );
+      }
     } catch (error) {
       const $t = get(t);
       handleError(error, $t('errors.unable_to_download_files'));
-      downloadManager.clear(downloadKey);
       return;
-    } finally {
-      setTimeout(() => downloadManager.clear(downloadKey), 5000);
     }
   }
 };
 
 /**
- * Returns the lowercase filename extension without a dot (.) and
- * an empty string when not found.
- */
+Returns the lowercase filename extension without a dot (.) and
+an empty string when not found.
+*/
 export function getFilenameExtension(filename: string): string {
   const lastIndex = Math.max(0, filename.lastIndexOf('.'));
-  const startIndex = (lastIndex || Number.POSITIVE_INFINITY) + 1;
+  const startIndex = (lastIndex || Infinity) + 1;
   return filename.slice(startIndex).toLowerCase();
 }
 
-/**
- * Returns the filename of an asset including file extension
- */
+/** Returns the filename of an asset including file extension */
 export function getAssetFilename(asset: AssetResponseDto): string {
   const fileExtension = getFilenameExtension(asset.originalPath);
   return `${asset.originalFileName}.${fileExtension}`;
 }
 
 function isRotated90CW(orientation: number) {
-  return orientation === 5 || orientation === 6 || orientation === 90;
+  return [5, 6, 90].includes(orientation);
 }
 
 function isRotated270CW(orientation: number) {
-  return orientation === 7 || orientation === 8 || orientation === -90;
+  return [7, 8, -90].includes(orientation);
 }
 
-export function isFlipped(orientation?: string | null) {
+function isFlipped(orientation?: string | null) {
   const value = Number(orientation);
   return value && (isRotated270CW(value) || isRotated90CW(value));
 }
@@ -173,12 +125,10 @@ export function getAssetResolution(asset: AssetResponseDto): string {
     return 'Invalid Data';
   }
 
-  return `${asset.width} x ${asset.height}`;
+  return `${asset.width} × ${asset.height}`;
 }
 
-/**
- * Returns aspect ratio for the asset
- */
+/** Returns aspect ratio for the asset */
 export function getAssetRatio(asset: AssetResponseDto) {
   return asset.width && asset.height ? asset.width / asset.height : null;
 }
@@ -245,9 +195,7 @@ async function addSupportedMimeTypes(): Promise<void> {
 }
 void addSupportedMimeTypes();
 
-/**
- * Returns true if the asset is an image supported by web browsers, false otherwise
- */
+/** Returns true if the asset is an image supported by web browsers, false otherwise */
 export function isWebCompatibleImage(asset: AssetResponseDto): boolean {
   if (!asset.originalMimeType) {
     return false;
@@ -255,20 +203,6 @@ export function isWebCompatibleImage(asset: AssetResponseDto): boolean {
 
   return supportedImageMimeTypes.has(asset.originalMimeType);
 }
-
-export const getAssetType = (type: AssetTypeEnum) => {
-  switch (type) {
-    case 'IMAGE': {
-      return 'Photo';
-    }
-    case 'VIDEO': {
-      return 'Video';
-    }
-    default: {
-      return 'Asset';
-    }
-  }
-};
 
 export const getOwnedAssetsWithWarning = (assets: TimelineAsset[], user: UserResponseDto | null): string[] => {
   const ids = [...assets].filter((a) => user && a.ownerId === user.id).map((a) => a.id);
@@ -279,84 +213,6 @@ export const getOwnedAssetsWithWarning = (assets: TimelineAsset[], user: UserRes
     toastManager.warning($t('errors.cant_change_metadata_assets_count', { values: { count: numberOfIssues } }));
   }
   return ids;
-};
-
-export type StackResponse = {
-  stack?: StackResponseDto;
-  toDeleteIds: string[];
-};
-
-export const stackAssets = async (assets: { id: string }[], showNotification = true): Promise<StackResponse> => {
-  if (assets.length < 2) {
-    return { stack: undefined, toDeleteIds: [] };
-  }
-
-  const $t = get(t);
-
-  try {
-    const stack = await createStack({ stackCreateDto: { assetIds: assets.map(({ id }) => id) } });
-    if (showNotification) {
-      toastManager.primary({
-        description: $t('stacked_assets_count', { values: { count: stack.assets.length } }),
-        button: {
-          label: $t('view_stack'),
-          onclick: () => navigate({ targetRoute: 'current', assetId: stack.primaryAssetId }),
-        },
-      });
-    }
-
-    return {
-      stack,
-      toDeleteIds: assets.slice(1).map((asset) => asset.id),
-    };
-  } catch (error) {
-    handleError(error, $t('errors.failed_to_stack_assets'));
-    return { stack: undefined, toDeleteIds: [] };
-  }
-};
-
-export const deleteStack = async (stackIds: string[]) => {
-  const ids = [...new Set(stackIds)];
-  if (ids.length === 0) {
-    return;
-  }
-
-  const $t = get(t);
-
-  try {
-    const stacks = await Promise.all(ids.map((id) => getStack({ id })));
-    const count = stacks.reduce((sum, stack) => sum + stack.assets.length, 0);
-
-    await deleteStacks({ bulkIdsDto: { ids: [...ids] } });
-
-    toastManager.primary($t('unstacked_assets_count', { values: { count } }));
-
-    const assets = stacks.flatMap((stack) => stack.assets);
-    for (const asset of assets) {
-      asset.stack = null;
-    }
-
-    return assets;
-  } catch (error) {
-    handleError(error, $t('errors.failed_to_unstack_assets'));
-  }
-};
-
-export const keepThisDeleteOthers = async (keepAsset: AssetResponseDto, stack: StackResponseDto) => {
-  const $t = get(t);
-
-  try {
-    const assetsToDeleteIds = stack.assets.filter((asset) => asset.id !== keepAsset.id).map((asset) => asset.id);
-    await deleteAssets({ assetBulkDeleteDto: { ids: assetsToDeleteIds } });
-    await deleteStacks({ bulkIdsDto: { ids: [stack.id] } });
-
-    toastManager.primary($t('kept_this_deleted_others', { values: { count: assetsToDeleteIds.length } }));
-
-    keepAsset.stack = null;
-    return keepAsset;
-  } catch (error) {
-    handleError(error, $t('errors.failed_to_keep_this_delete_others'));
-  }
 };
 
 export const selectAllAssets = async (timelineManager: TimelineManager, assetInteraction: AssetMultiSelectManager) => {
@@ -400,7 +256,13 @@ export const toggleArchive = async (asset: AssetResponseDto) => {
     });
 
     asset.isArchived = data.isArchived;
-    toastManager.primary(asset.isArchived ? $t(`added_to_archive`) : $t(`removed_from_archive`));
+    asset.visibility = data.visibility;
+    if (asset.isArchived) {
+      const timelineAsset = toTimelineAsset(asset);
+      showUndoArchiveToast($t('added_to_archive'), [timelineAsset]);
+    } else {
+      toastManager.primary($t('removed_from_archive'));
+    }
   } catch (error) {
     handleError(error, $t('errors.unable_to_add_remove_archive', { values: { archived: asset.isArchived } }));
   }
@@ -408,30 +270,42 @@ export const toggleArchive = async (asset: AssetResponseDto) => {
   return asset;
 };
 
-export const archiveAssets = async (assets: { id: string }[], visibility: AssetVisibility) => {
-  const ids = assets.map(({ id }) => id);
+const showUndoArchiveToast = (description: string, assets: TimelineAsset[]) => {
   const $t = get(t);
+  toastManager.primary({
+    description,
+    button: (close) => ({
+      label: $t('undo'),
+      onclick: () => {
+        close();
+        void undoArchiveAssets(assets);
+      },
+    }),
+  });
+};
 
+const undoArchiveAssets = async (assets: TimelineAsset[]) => {
+  const $t = get(t);
   try {
+    const ids = assets.map((a) => a.id);
     if (ids.length > 0) {
       await updateAssets({
-        assetBulkUpdateDto: { ids, visibility },
+        assetBulkUpdateDto: {
+          ids,
+          visibility: AssetVisibility.Timeline,
+        },
       });
     }
 
-    toastManager.primary(
-      visibility === AssetVisibility.Archive
-        ? $t('archived_count', { values: { count: ids.length } })
-        : $t('unarchived_count', { values: { count: ids.length } }),
-    );
+    for (const asset of assets) {
+      asset.visibility = AssetVisibility.Timeline;
+    }
+    eventManager.emit('AssetsUnarchive', assets);
+    eventManager.emit('AssetsUndoArchive', assets);
+    toastManager.success($t('unarchived_count', { values: { count: assets.length } }));
   } catch (error) {
-    handleError(
-      error,
-      $t('errors.unable_to_archive_unarchive', { values: { archived: visibility === AssetVisibility.Archive } }),
-    );
+    handleError(error, $t('errors.unable_to_archive_unarchive', { values: { archived: false } }));
   }
-
-  return ids;
 };
 
 export const delay = async (ms: number) => {

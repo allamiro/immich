@@ -1,41 +1,42 @@
 <script lang="ts">
-  import { initInput } from '$lib/actions/focus';
+  import { initInput } from '#lib/actions/focus.ts';
   import {
     AlbumModalRowConverter,
     AlbumModalRowType,
     isSelectableRowType,
-  } from '$lib/components/shared-components/album-selection/album-selection-utils';
-  import { eventManager } from '$lib/managers/event-manager.svelte';
-  import { albumViewSettings } from '$lib/stores/preferences.store';
-  import { createAlbum, getAllAlbums, type AlbumResponseDto } from '@immich/sdk';
+  } from '#lib/components/shared-components/album-selection/album-selection-utils.ts';
+  import { createAlbumMutation, getAllAlbumsQuery, getRecentAlbumsQuery } from '#lib/queries/album.query.ts';
+  import { executeMutation, queryClient } from '#lib/queries/client.ts';
+  import { albumViewSettings } from '#lib/stores/preferences.store.ts';
+  import { type AlbumResponseDto } from '@immich/sdk';
   import { Button, Icon, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
   import { mdiKeyboardReturn } from '@mdi/js';
-  import { onMount } from 'svelte';
+  import { createQuery } from '@tanstack/svelte-query';
   import { t } from 'svelte-i18n';
   import AlbumListItem from '../components/asset-viewer/AlbumListItem.svelte';
   import NewAlbumListItem from '../components/shared-components/album-selection/NewAlbumListItem.svelte';
 
-  let albums: AlbumResponseDto[] = $state([]);
-  let recentAlbums: AlbumResponseDto[] = $state([]);
-  let loading = $state(true);
-  let search = $state('');
-  let selectedRowIndex: number = $state(-1);
+  const queries = {
+    albums: createQuery(getAllAlbumsQuery, () => queryClient),
+    recentAlbums: createQuery(getRecentAlbumsQuery, () => queryClient),
+  };
 
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
+    selectedItemsCount?: number;
     excludedAlbumIds?: string[];
     title?: string;
     multiple?: boolean;
   };
 
-  let { onClose, excludedAlbumIds = [], title, multiple = true }: Props = $props();
+  let { onClose, selectedItemsCount, excludedAlbumIds = [], title, multiple = true }: Props = $props();
 
-  onMount(async () => {
-    const all = await getAllAlbums({});
-    albums = excludedAlbumIds.length > 0 ? all.filter(({ id }) => !excludedAlbumIds.includes(id)) : all;
-    recentAlbums = [...albums].sort((a, b) => (new Date(a.updatedAt) > new Date(b.updatedAt) ? -1 : 1)).slice(0, 3);
-    loading = false;
-  });
+  const isSelectable = ({ id }: AlbumResponseDto) => !excludedAlbumIds.includes(id);
+  const albums = $derived((queries.albums.data ?? []).filter((album) => isSelectable(album)));
+  const recentAlbums = $derived((queries.recentAlbums.data ?? []).filter((album) => isSelectable(album)));
+  const loading = $derived(queries.albums.isPending);
+  let search = $state('');
+  let selectedRowIndex: number = $state(-1);
 
   const multiSelectedAlbumIds: string[] = $state([]);
   const multiSelectActive = $derived(multiSelectedAlbumIds.length > 0);
@@ -46,11 +47,10 @@
   );
   const selectableRowCount = $derived(albumModalRows.filter((row) => isSelectableRowType(row.type)).length);
 
-  const onNewAlbum = async (name: string) => {
-    const album = await createAlbum({ createAlbumDto: { albumName: name } });
-    eventManager.emit('AlbumCreate', album);
-    onClose([album]);
-  };
+  const onNewAlbum = (name: string) =>
+    executeMutation(createAlbumMutation, [{ createAlbumDto: { albumName: name } }], {
+      onSuccess: (album) => onClose([album]),
+    });
 
   const handleAlbumClick = (album?: AlbumResponseDto) => {
     if (multiSelectActive) {
@@ -113,6 +113,7 @@
         }
         break;
       }
+      // no default
     }
 
     selectedRowIndex = -1;
@@ -144,6 +145,7 @@
         break;
       }
       case 'Control': {
+        // eslint-disable-next-line unicorn/no-late-event-control
         e.preventDefault();
         handleMultiSelect();
         break;
@@ -153,9 +155,16 @@
       }
     }
   };
+
+  const modalTitle = $derived(
+    title ??
+      (selectedItemsCount === undefined
+        ? $t('select_albums')
+        : $t('add_to_album_item_count', { values: { count: selectedItemsCount } })),
+  );
 </script>
 
-<Modal title={title ?? $t('add_to_album')} {onClose} size="small">
+<Modal title={modalTitle} {onClose} size="small">
   <ModalBody>
     <div class="mb-2 flex max-h-100 flex-col">
       {#if loading}
@@ -178,7 +187,7 @@
           placeholder={$t('search')}
           {onkeydown}
           bind:value={search}
-          use:initInput
+          {@attach initInput}
         />
         <div class="immich-scrollbar overflow-y-auto">
           <!-- eslint-disable-next-line svelte/require-each-key -->

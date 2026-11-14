@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { clickOutside } from '$lib/actions/click-outside';
-  import { languageManager } from '$lib/managers/language-manager.svelte';
+  import { clickOutside } from '#lib/actions/click-outside.ts';
+  import { languageManager } from '#lib/managers/language-manager.svelte.ts';
   import type { Snippet } from 'svelte';
 
   interface Props {
@@ -64,7 +64,7 @@
 <div
   bind:this={menuScrollView}
   class={[
-    'fixed z-1 w-max max-w-75 min-w-50 immich-scrollbar rounded-lg bg-slate-100 shadow-lg duration-250 ease-in-out',
+    'fixed z-70 w-max max-w-75 min-w-50 immich-scrollbar rounded-lg bg-slate-100 shadow-lg duration-250 ease-in-out',
     position.needScrollBar ? 'overflow-auto' : 'overflow-hidden',
   ]}
   style:left="{position.left}px"
@@ -72,7 +72,7 @@
   style:max-height={isVisible ? `${position.maxHeight}px` : '0px'}
   style:transition-property="max-height"
   style:scrollbar-color="rgba(85, 86, 87, 0.408) transparent"
-  use:clickOutside={{ onOutclick: onClose }}
+  {@attach clickOutside({ onOutclick: onClose })}
   tabindex="-1"
 >
   <ul

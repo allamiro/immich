@@ -1,16 +1,20 @@
 <script lang="ts">
-  import SettingButtonsRow from '$lib/components/shared-components/settings/SystemConfigButtonRow.svelte';
-  import SettingInputField from '$lib/components/shared-components/settings/SettingInputField.svelte';
-  import { SettingInputFieldType } from '$lib/constants';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import { systemConfigManager } from '$lib/managers/system-config-manager.svelte';
-  import { QueueName, type SystemConfigJobDto } from '@immich/sdk';
+  import SettingInputField from '#lib/components/shared-components/settings/SettingInputField.svelte';
+  import SettingButtonsRow from '#lib/components/shared-components/settings/SystemConfigButtonRow.svelte';
+  import { SettingInputFieldType } from '#lib/constants.ts';
+  import { featureFlagsManager } from '#lib/managers/feature-flags-manager.svelte.ts';
+  import { createPreloadedQuery } from '#lib/queries/client.ts';
+  import { getAdminConfigQuery } from '#lib/queries/config-admin.query.ts';
+  import { QueueName, type AdminConfigJobDto } from '@immich/sdk';
+  import { cloneDeep } from 'lodash-es';
   import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
 
+  const query = createPreloadedQuery(getAdminConfigQuery);
+  const config = $derived(query.data);
+
   const disabled = $derived(featureFlagsManager.value.configFile);
-  const config = $derived(systemConfigManager.value);
-  let configToEdit = $state(systemConfigManager.cloneValue());
+  let configToEdit = $state(cloneDeep(config));
 
   const queueNames = [
     QueueName.ThumbnailGeneration,
@@ -26,8 +30,8 @@
     QueueName.Ocr,
   ];
 
-  function isSystemConfigJobDto(jobName: string): jobName is keyof SystemConfigJobDto {
-    return jobName in configToEdit.job;
+  function isSystemConfigJobDto(jobName: string): jobName is keyof AdminConfigJobDto {
+    return Object.hasOwn(configToEdit.job, jobName);
   }
 
   const queueTitles: Record<QueueName, string> = $derived({
@@ -49,6 +53,7 @@
     [QueueName.Ocr]: $t('admin.machine_learning_ocr'),
     [QueueName.Workflow]: $t('workflows'),
     [QueueName.Editor]: $t('editor'),
+    [QueueName.IntegrityCheck]: $t('integrity_checks'),
   });
 </script>
 
@@ -65,7 +70,7 @@
               description=""
               bind:value={configToEdit.job[queueName].concurrency}
               required={true}
-              isEdited={!(configToEdit.job[queueName].concurrency == config.job[queueName].concurrency)}
+              isEdited={configToEdit.job[queueName].concurrency !== config.job[queueName].concurrency}
             />
           {:else}
             <SettingInputField

@@ -1,22 +1,21 @@
-import type { DateTime } from 'luxon';
+import { defaultLang } from '#lib/constants.ts';
+import { convertBCP47, getPreferredLocale } from '#lib/utils/i18n.ts';
 import { persisted } from 'svelte-persisted-store';
-import { browser } from '$app/environment';
-import { defaultLang } from '$lib/constants';
-import { getPreferredLocale } from '$lib/utils/i18n';
+import { browser } from '$app/env';
 
 // Locale to use for formatting dates, numbers, etc.
 export const locale = persisted('locale', 'default', {
   serializer: {
-    parse: (text) => text || 'default',
-    stringify: (object) => object ?? '',
+    parse: (text) => convertBCP47(text) || 'default',
+    stringify: (object = '') => object,
   },
 });
 
 const preferredLocale = browser ? getPreferredLocale() : undefined;
 export const lang = persisted<string>('lang', preferredLocale || defaultLang.code, {
   serializer: {
-    parse: (text) => text,
-    stringify: (object) => object ?? '',
+    parse: (text) => convertBCP47(text),
+    stringify: (object = '') => object,
   },
 });
 
@@ -26,9 +25,10 @@ export interface MapSettings {
   onlyFavorites: boolean;
   withPartners: boolean;
   withSharedAlbums: boolean;
+  showAssetPanel: boolean;
   relativeDate: string;
-  dateAfter?: DateTime<true>;
-  dateBefore?: DateTime<true>;
+  dateAfter?: string;
+  dateBefore?: string;
 }
 
 const defaultMapSettings = {
@@ -37,6 +37,7 @@ const defaultMapSettings = {
   onlyFavorites: false,
   withPartners: false,
   withSharedAlbums: false,
+  showAssetPanel: false,
   relativeDate: '',
 };
 
@@ -69,11 +70,6 @@ export interface PlacesViewSettings {
     // Grouping Option => Array<Group ID>
     [group: string]: string[];
   };
-}
-
-export interface SidebarSettings {
-  people: boolean;
-  sharing: boolean;
 }
 
 export enum SortOrder {
@@ -140,3 +136,5 @@ export const autoPlayVideo = persisted<boolean>('auto-play-video', true, {});
 export const alwaysLoadOriginalVideo = persisted<boolean>('always-load-original-video', false, {});
 
 export const recentAlbumsDropdown = persisted<boolean>('recent-albums-open', true, {});
+
+export const hideBackupsReminder = persisted<boolean>('hide-backups-reminder', false, {});

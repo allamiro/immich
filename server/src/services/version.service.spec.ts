@@ -1,17 +1,16 @@
 import { DateTime } from 'luxon';
-import { SemVer } from 'semver';
-import { defaults } from 'src/config';
-import { serverVersion } from 'src/constants';
-import { ReleaseChannel } from 'src/dtos/system-config.dto';
-import { CronJob, JobName, JobStatus, SystemMetadataKey } from 'src/enum';
-import { VersionService } from 'src/services/version.service';
-import { factory } from 'test/small.factory';
-import { newTestService, ServiceMocks } from 'test/utils';
+import { defaults } from 'src/dtos/config.dto.js';
+import { CronJob, JobName, JobStatus, ReleaseChannel, SystemMetadataKey } from 'src/enum.js';
+import { VersionService } from 'src/services/version.service.js';
+import { factory } from 'test/small.factory.js';
+import { ServiceMocks, newTestService } from 'test/utils.js';
 
 const mockVersionResponse = (version: string) => ({
   version,
   published_at: DateTime.utc().toISO(),
 });
+
+vitest.mock('node:fs', () => ({ readFileSync: () => JSON.stringify({ version: 'v3.0.0' }) }));
 
 describe(VersionService.name, () => {
   let sut: VersionService;
@@ -21,17 +20,6 @@ describe(VersionService.name, () => {
     ({ sut, mocks } = newTestService(VersionService));
     mocks.cron.create.mockResolvedValue();
     mocks.cron.update.mockResolvedValue();
-  });
-
-  beforeAll(() => {
-    vitest.mock(import('src/constants.js'), async () => ({
-      ...(await vitest.importActual<typeof import('src/constants.js')>('src/constants.js')),
-      serverVersion: new SemVer('v3.0.0'),
-    }));
-  });
-
-  afterAll(() => {
-    vitest.unmock(import('src/constants.js'));
   });
 
   it('should work', () => {
@@ -53,7 +41,7 @@ describe(VersionService.name, () => {
       mocks.versionHistory.getLatest.mockResolvedValue({
         id: 'version-1',
         createdAt: new Date(),
-        version: serverVersion.toString(),
+        version: '3.0.0',
       });
       await expect(sut.onBootstrap()).resolves.toBeUndefined();
       expect(mocks.versionHistory.create).not.toHaveBeenCalled();
@@ -64,7 +52,7 @@ describe(VersionService.name, () => {
       mocks.versionHistory.getLatest.mockResolvedValue({
         id: 'version-1',
         createdAt: new Date(),
-        version: serverVersion.toString(),
+        version: '3.0.0',
       });
       await sut.onBootstrap();
       expect(mocks.cron.create).toHaveBeenCalledWith(
@@ -77,12 +65,15 @@ describe(VersionService.name, () => {
 
   describe('getVersion', () => {
     it('should respond the server version', () => {
-      expect(sut.getVersion()).toEqual({
+      const version = sut.getVersion();
+      expect(version).toEqual({
         major: 3,
         minor: 0,
         patch: 0,
         prerelease: null,
+        featureLevel: expect.any(Number),
       });
+      expect(Number.isSafeInteger(version.featureLevel)).toBe(true);
     });
   });
 
@@ -121,7 +112,7 @@ describe(VersionService.name, () => {
         checkedAt: DateTime.utc().minus({ seconds: 60 }).toISO(),
         releaseVersion: '1.0.0',
       });
-      mocks.serverInfo.getLatestRelease.mockResolvedValue(mockVersionResponse(serverVersion.toString()));
+      mocks.serverInfo.getLatestRelease.mockResolvedValue(mockVersionResponse('v3.0.0'));
       await expect(sut.handleVersionCheck()).resolves.toEqual(JobStatus.Success);
       expect(mocks.serverInfo.getLatestRelease).toHaveBeenCalled();
     });
@@ -135,11 +126,11 @@ describe(VersionService.name, () => {
     });
 
     it('should not notify if the version is equal', async () => {
-      mocks.serverInfo.getLatestRelease.mockResolvedValue(mockVersionResponse(serverVersion.toString()));
+      mocks.serverInfo.getLatestRelease.mockResolvedValue(mockVersionResponse('v3.0.0'));
       await expect(sut.handleVersionCheck()).resolves.toEqual(JobStatus.Success);
       expect(mocks.systemMetadata.set).toHaveBeenCalledWith(SystemMetadataKey.VersionCheckState, {
         checkedAt: expect.any(String),
-        releaseVersion: serverVersion.toString(),
+        releaseVersion: 'v3.0.0',
       });
       expect(mocks.websocket.clientBroadcast).not.toHaveBeenCalled();
     });
@@ -187,6 +178,7 @@ describe(VersionService.name, () => {
         minor: 0,
         patch: 0,
         prerelease: null,
+        featureLevel: expect.any(Number),
       });
       expect(mocks.websocket.clientSend).toHaveBeenCalledTimes(1);
     });
@@ -199,6 +191,7 @@ describe(VersionService.name, () => {
         minor: 0,
         patch: 0,
         prerelease: null,
+        featureLevel: expect.any(Number),
       });
       expect(mocks.websocket.clientSend).toHaveBeenCalledWith('on_new_release', '42', expect.any(Object));
     });
@@ -211,6 +204,7 @@ describe(VersionService.name, () => {
         minor: 0,
         patch: 0,
         prerelease: null,
+        featureLevel: expect.any(Number),
       });
       expect(mocks.websocket.clientSend).not.toHaveBeenCalledWith('on_new_release', '42', expect.any(Object));
     });

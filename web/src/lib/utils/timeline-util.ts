@@ -1,10 +1,10 @@
-import { AssetTypeEnum, AssetOrderBy, type AssetResponseDto } from '@immich/sdk';
+import type { AssetDescriptor, TimelineAsset, ViewportTopMonth } from '#lib/managers/timeline-manager/types.ts';
+import { locale } from '#lib/stores/preferences.store.ts';
+import { getAssetRatio } from '#lib/utils/asset-utils.ts';
+import { AssetOrderBy, AssetTypeEnum, type AssetResponseDto } from '@immich/sdk';
 import { DateTime, type LocaleOptions } from 'luxon';
 import { SvelteSet } from 'svelte/reactivity';
 import { get } from 'svelte/store';
-import type { AssetDescriptor, TimelineAsset, ViewportTopMonth } from '$lib/managers/timeline-manager/types';
-import { locale } from '$lib/stores/preferences.store';
-import { getAssetRatio } from '$lib/utils/asset-utils';
 
 // Move type definitions to the top
 export type TimelineYearMonth = {
@@ -33,35 +33,11 @@ export type ScrubberListener = (scrubberData: {
 export const fromISODateTime = (isoDateTime: string, timeZone: string): DateTime<true> =>
   DateTime.fromISO(isoDateTime, { zone: timeZone, locale: get(locale) }) as DateTime<true>;
 
-export const fromISODateTimeToObject = (isoDateTime: string, timeZone: string): TimelineDateTime =>
-  (fromISODateTime(isoDateTime, timeZone) as DateTime<true>).toObject();
-
 // used for AssetResponseDto.localDateTime, amongst others
 export const fromISODateTimeUTC = (isoDateTimeUtc: string) => fromISODateTime(isoDateTimeUtc, 'UTC');
 
 export const fromISODateTimeUTCToObject = (isoDateTimeUtc: string): TimelineDateTime =>
   (fromISODateTimeUTC(isoDateTimeUtc) as DateTime<true>).toObject();
-
-// used to create equivalent of AssetResponseDto.localDateTime in UTC, but without timezone information
-export const fromISODateTimeTruncateTZToObject = (
-  isoDateTimeUtc: string,
-  timeZone: string | undefined,
-): TimelineDateTime =>
-  (
-    fromISODateTime(isoDateTimeUtc, timeZone ?? 'UTC').setZone('UTC', { keepLocalTime: true }) as DateTime<true>
-  ).toObject();
-
-// Used to derive a local date time from an ISO string and a UTC offset in hours
-export const fromISODateTimeWithOffsetToObject = (isoDateTimeUtc: string, utcOffsetHours: number): TimelineDateTime => {
-  const utcDateTime = fromISODateTimeUTC(isoDateTimeUtc);
-
-  // Apply the offset to get the local time
-  // Note: offset is in hours (may be fractional), positive for east of UTC, negative for west
-  const localDateTime = utcDateTime.plus({ hours: utcOffsetHours });
-
-  // Return as plain object (keeping the local time but in UTC zone context)
-  return (localDateTime.setZone('UTC', { keepLocalTime: true }) as DateTime<true>).toObject();
-};
 
 export const getTimes = (isoDateTimeUtc: string, localUtcOffsetHours: number) => {
   const utcDateTime = fromISODateTimeUTC(isoDateTimeUtc);
@@ -95,8 +71,8 @@ export const fromTimelinePlainYearMonth = (timelineYearMonth: TimelineYearMonth)
   ) as DateTime<true>;
 
 export const toISOYearMonthUTC = ({ year, month }: TimelineYearMonth): string => {
-  const yearFull = `${year}`.padStart(4, '0');
-  const monthFull = `${month}`.padStart(2, '0');
+  const yearFull = String(year).padStart(4, '0');
+  const monthFull = String(month).padStart(2, '0');
   return `${yearFull}-${monthFull}-01T00:00:00.000Z`;
 };
 
@@ -165,7 +141,10 @@ export const toTimelineAsset = (unknownAsset: AssetResponseDto | TimelineAsset):
   const people = assetResponse.people?.map((person) => person.name) || [];
 
   const localDateTime = fromISODateTimeUTCToObject(assetResponse.localDateTime);
-  const fileCreatedAt = fromISODateTimeToObject(assetResponse.fileCreatedAt, assetResponse.exifInfo?.timeZone ?? 'UTC');
+  // Keep this consistent with the bucket loader (getTimes), which stores fileCreatedAt as UTC
+  // components. The timeline sorts assets within a day by fileCreatedAt, so a mismatched
+  // representation here would place re-inserted assets (e.g. undo archive) in the wrong spot.
+  const fileCreatedAt = fromISODateTimeUTCToObject(assetResponse.fileCreatedAt);
   const createdAt = fromISODateTimeUTCToObject(assetResponse.createdAt);
 
   return {
@@ -180,8 +159,8 @@ export const toTimelineAsset = (unknownAsset: AssetResponseDto | TimelineAsset):
     isFavorite: assetResponse.isFavorite,
     visibility: assetResponse.visibility,
     isTrashed: assetResponse.isTrashed,
-    isVideo: assetResponse.type == AssetTypeEnum.Video,
-    isImage: assetResponse.type == AssetTypeEnum.Image,
+    isVideo: assetResponse.type === AssetTypeEnum.Video,
+    isImage: assetResponse.type === AssetTypeEnum.Image,
     stack: assetResponse.stack || null,
     duration: assetResponse.duration || null,
     projectionType: assetResponse.exifInfo?.projectionType || null,

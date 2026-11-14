@@ -1,8 +1,8 @@
 <script lang="ts">
-  import StarRating, { type Rating } from '$lib/elements/StarRating.svelte';
-  import { authManager } from '$lib/managers/auth-manager.svelte';
-  import { handlePromiseError } from '$lib/utils';
-  import { handleError } from '$lib/utils/handle-error';
+  import StarRating, { type Rating } from '#lib/elements/StarRating.svelte';
+  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import { handlePromiseError } from '#lib/utils.ts';
+  import { handleError } from '#lib/utils/handle-error.ts';
   import { updateAsset, type AssetResponseDto } from '@immich/sdk';
   import { t } from 'svelte-i18n';
 
@@ -13,9 +13,9 @@
 
   let { asset, isOwner }: Props = $props();
 
-  let rating = $derived(asset.exifInfo?.rating || null) as Rating;
+  let rating = $derived(asset.exifInfo?.rating ?? null) as Rating;
 
-  const handleChangeRating = async (rating: number | null) => {
+  const handleChangeRating = async (rating: Rating) => {
     try {
       await updateAsset({ id: asset.id, updateAssetDto: { rating } });
     } catch (error) {

@@ -1,12 +1,12 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { getClosestAvailableLocale, langs } from '$lib/utils/i18n';
+import { getClosestAvailableLocale, langs } from '#lib/utils/i18n.ts';
 
 describe('i18n', () => {
   describe('loaders', () => {
-    const languageFiles = readdirSync('../i18n').sort();
-    for (const filename of languageFiles) {
+    const languageFiles = import.meta.glob<{ default: unknown }>('#i18n/*.json');
+    for (const [path, load] of Object.entries(languageFiles).sort(([a], [b]) => a.localeCompare(b))) {
+      const filename = path.split('/').pop()!;
       test(`${filename} should have a loader`, async () => {
-        if (!filename.endsWith('.json') || filename == 'package.json') {
+        if (filename === 'package.json') {
           return;
         }
 
@@ -17,11 +17,9 @@ describe('i18n', () => {
           return;
         }
 
-        // verify it loads the right file
         const module: { default?: unknown } = await item.loader();
-        const translations = JSON.stringify(module.default, null, 2).trim();
-        const content = readFileSync(`../i18n/${filename}`).toString().trim();
-        expect(translations === content, `${item.name} did not load ${filename}`).toEqual(true);
+        const { default: content } = await load();
+        expect(module.default, `${item.name} did not load ${filename}`).toEqual(content);
       });
     }
   });
@@ -57,6 +55,15 @@ describe('i18n', () => {
       expect(getClosestAvailableLocale(['pt_BR'], allLocales)).toBe('pt_BR');
       expect(getClosestAvailableLocale(['sr_Cyrl'], allLocales)).toBe('sr_Cyrl');
       expect(getClosestAvailableLocale(['zh_Hant'], allLocales)).toBe('zh_Hant');
+    });
+
+    it('should handle language aliases', () => {
+      const allLocales = ['zh-Hans', 'zh-Hant'];
+      expect(getClosestAvailableLocale(['zh-CN'], allLocales)).toBe('zh-Hans');
+      expect(getClosestAvailableLocale(['zh-HK'], allLocales)).toBe('zh-Hant');
+      expect(getClosestAvailableLocale(['zh-MO'], allLocales)).toBe('zh-Hant');
+      expect(getClosestAvailableLocale(['zh-SG'], allLocales)).toBe('zh-Hans');
+      expect(getClosestAvailableLocale(['zh-TW'], allLocales)).toBe('zh-Hant');
     });
   });
 });

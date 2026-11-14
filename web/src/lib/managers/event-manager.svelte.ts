@@ -1,21 +1,20 @@
+import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
+import { BaseEventManager } from '#lib/utils/base-event-manager.svelte.ts';
 import type {
+  AdminConfigDto,
   AlbumResponseDto,
   AlbumUserRole,
   ApiKeyResponseDto,
   AssetResponseDto,
-  LibraryResponseDto,
+  IntegrityReport,
+  JobCreateDto,
   LoginResponseDto,
+  PasskeyResponseDto,
   PersonResponseDto,
-  QueueResponseDto,
   ReleaseEventV1,
-  SharedLinkResponseDto,
-  SystemConfigDto,
-  TagResponseDto,
+  StackResponseDto,
   UserAdminResponseDto,
-  WorkflowResponseDto,
 } from '@immich/sdk';
-import { BaseEventManager } from '$lib/utils/base-event-manager.svelte';
-import type { TreeNode } from '$lib/utils/tree-utils';
 
 export type Events = {
   AppInit: [];
@@ -31,13 +30,20 @@ export type Events = {
   ApiKeyUpdate: [ApiKeyResponseDto];
   ApiKeyDelete: [ApiKeyResponseDto];
 
+  PasskeyCreate: [PasskeyResponseDto];
+  PasskeyUpdate: [PasskeyResponseDto];
+  PasskeyDelete: [PasskeyResponseDto];
+
   AssetUpdate: [AssetResponseDto];
   AssetsArchive: [string[]];
+  AssetsUnarchive: [TimelineAsset[]];
+  AssetsUndoArchive: [TimelineAsset[]];
   AssetsDelete: [string[]];
   AssetEditsApplied: [string];
   AssetsTag: [string[]];
 
   AlbumAddAssets: [{ assetIds: string[]; albumIds: string[] }];
+  AlbumRemoveAssets: [{ assetIds: string[]; albumIds: string[] }];
   AlbumCreate: [AlbumResponseDto];
   AlbumUpdate: [AlbumResponseDto];
   AlbumDelete: [AlbumResponseDto];
@@ -46,6 +52,8 @@ export type Events = {
   AlbumUserDelete: [{ albumId: string; userId: string }];
 
   PersonUpdate: [PersonResponseDto];
+  PersonShare: [{ personId: string }];
+  PersonUserDelete: [{ personId: string; userId: string }];
   PersonThumbnailReady: [{ id: string }];
   PersonAssetDelete: [{ id: string; assetId: string }];
 
@@ -53,38 +61,25 @@ export type Events = {
   BackupDeleted: [{ filename: string }];
   BackupUpload: [{ progress: number; isComplete: boolean }];
 
-  QueueUpdate: [QueueResponseDto];
-
-  SharedLinkCreate: [SharedLinkResponseDto];
-  SharedLinkUpdate: [SharedLinkResponseDto];
-  SharedLinkDelete: [SharedLinkResponseDto];
-
-  TagCreate: [TagResponseDto];
-  TagUpdate: [TagResponseDto];
-  TagDelete: [TreeNode];
+  StackCreate: [StackResponseDto];
+  /** Unstacked, with assets to handle */
+  StackDelete: [{ id: string; assets: AssetResponseDto[] }];
+  /** Contains the new stack. If any assets are removed, AssetUpdate events are emitted for each. */
+  StackUpdate: [StackResponseDto];
 
   UserPinCodeReset: [];
 
-  UserAdminCreate: [UserAdminResponseDto];
-  UserAdminUpdate: [UserAdminResponseDto];
-  UserAdminRestore: [UserAdminResponseDto];
-  // soft deleted
-  UserAdminDelete: [UserAdminResponseDto];
-  // confirmed permanently deleted from server
   UserAdminDeleted: [{ id: string }];
 
   SessionLocked: [];
   SessionDelete: [];
 
-  SystemConfigUpdate: [SystemConfigDto];
+  SystemConfigUpdate: [AdminConfigDto];
 
-  LibraryCreate: [LibraryResponseDto];
-  LibraryUpdate: [LibraryResponseDto];
-  LibraryDelete: [{ id: string }];
+  IntegrityReportDeleteStatus: [{ type?: IntegrityReport; id?: string; isDeleting: boolean }];
+  IntegrityReportDeleted: [{ type?: IntegrityReport; id?: string }];
 
-  WorkflowCreate: [WorkflowResponseDto];
-  WorkflowUpdate: [WorkflowResponseDto];
-  WorkflowDelete: [WorkflowResponseDto];
+  JobCreate: [{ dto: JobCreateDto }];
 
   ReleaseEvent: [ReleaseEventV1];
 

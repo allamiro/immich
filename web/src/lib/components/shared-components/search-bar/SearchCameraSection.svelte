@@ -1,82 +1,61 @@
 <script lang="ts">
-  import Combobox, { asComboboxOptions, asSelectedOption } from '$lib/components/shared-components/Combobox.svelte';
-  import type { SearchCameraFilter } from '$lib/types';
-  import { handlePromiseError } from '$lib/utils';
-  import { SearchSuggestionType, getSearchSuggestions } from '@immich/sdk';
+  import Combobox, { asComboboxOptions, asSelectedOption } from '#lib/components/shared-components/Combobox.svelte';
+  import { searchManager } from '#lib/managers/search-manager.svelte.ts';
+  import { getSearchSuggestionsQuery } from '#lib/queries/search.query.ts';
+  import { SearchSuggestionType } from '@immich/sdk';
   import { Text } from '@immich/ui';
+  import { createQuery } from '@tanstack/svelte-query';
   import { t } from 'svelte-i18n';
 
-  type Props = {
-    filters: SearchCameraFilter;
-  };
-
-  let { filters = $bindable() }: Props = $props();
-
-  let makes: string[] = $state([]);
-  let models: string[] = $state([]);
-  let lensModels: string[] = $state([]);
-
-  async function updateMakes() {
-    const results: Array<string | null> = await getSearchSuggestions({
-      $type: SearchSuggestionType.CameraMake,
-      includeNull: true,
-    });
-
-    makes = results.map((result) => result ?? '');
-
-    if (filters.make && !makes.includes(filters.make)) {
-      filters.make = undefined;
-    }
-  }
-
-  async function updateModels(make?: string) {
-    const results: Array<string | null> = await getSearchSuggestions({
-      $type: SearchSuggestionType.CameraModel,
-      make,
-      includeNull: true,
-    });
-
-    models = results.map((result) => result ?? '');
-
-    if (filters.model && !models.includes(filters.model)) {
-      filters.model = undefined;
-    }
-  }
-
-  async function updateLensModels(make?: string, model?: string) {
-    const results: Array<string | null> = await getSearchSuggestions({
-      $type: SearchSuggestionType.CameraLensModel,
-      make,
-      model,
-      includeNull: true,
-    });
-
-    lensModels = results.map((result) => result ?? '');
-
-    if (filters.lensModel && !lensModels.includes(filters.lensModel)) {
-      filters.lensModel = undefined;
-    }
-  }
+  let filters = $derived(searchManager.filter.camera);
 
   const makeFilter = $derived(filters.make);
   const modelFilter = $derived(filters.model);
   const lensModelFilter = $derived(filters.lensModel);
 
-  // TODO replace by async $derived, at the latest when it's in stable https://svelte.dev/docs/svelte/await-expressions
+  const queries = {
+    makes: createQuery(() => getSearchSuggestionsQuery({ $type: SearchSuggestionType.CameraMake, includeNull: true })),
+    models: createQuery(() =>
+      getSearchSuggestionsQuery({ $type: SearchSuggestionType.CameraModel, make: makeFilter, includeNull: true }),
+    ),
+    lensModels: createQuery(() =>
+      getSearchSuggestionsQuery({
+        $type: SearchSuggestionType.CameraLensModel,
+        make: makeFilter,
+        model: modelFilter,
+        includeNull: true,
+      }),
+    ),
+  };
+
+  const asValues = (results: Array<string | null> = []) => results.map((result) => result ?? '');
+
+  const makes = $derived(asValues(queries.makes.data));
+  const models = $derived(asValues(queries.models.data));
+  const lensModels = $derived(asValues(queries.lensModels.data));
+
   $effect(() => {
-    handlePromiseError(updateMakes());
+    if (queries.makes.data && filters.make && !makes.includes(filters.make)) {
+      filters.make = undefined;
+    }
   });
+
   $effect(() => {
-    handlePromiseError(updateModels(makeFilter));
+    if (queries.models.data && filters.model && !models.includes(filters.model)) {
+      filters.model = undefined;
+    }
   });
+
   $effect(() => {
-    handlePromiseError(updateLensModels(makeFilter, modelFilter));
+    if (queries.lensModels.data && filters.lensModel && !lensModels.includes(filters.lensModel)) {
+      filters.lensModel = undefined;
+    }
   });
 </script>
 
 <div id="camera-selection">
-  <Text fontWeight="medium">{$t('camera')}</Text>
-  <div class="mt-1 grid grid-auto-fit-40 gap-5">
+  <Text fontWeight="medium" class="pb-5">{$t('camera')}</Text>
+  <div class="grid grid-auto-fit-40 gap-2">
     <div class="w-full">
       <Combobox
         label={$t('make')}

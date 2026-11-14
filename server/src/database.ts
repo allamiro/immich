@@ -1,5 +1,6 @@
 import { Selectable, ShallowDehydrateObject } from 'kysely';
-import { MapAsset } from 'src/dtos/asset-response.dto';
+import { MapAsset } from 'src/dtos/asset-response.dto.js';
+import { PersonUserRole } from 'src/dtos/person.dto.js';
 import {
   AlbumUserRole,
   AssetFileType,
@@ -12,12 +13,12 @@ import {
   SourceType,
   UserAvatarColor,
   UserStatus,
-} from 'src/enum';
-import { AlbumTable } from 'src/schema/tables/album.table';
-import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { AssetTable } from 'src/schema/tables/asset.table';
-import { PluginTable } from 'src/schema/tables/plugin.table';
-import { UserMetadataItem } from 'src/types';
+} from 'src/enum.js';
+import { AlbumTable } from 'src/schema/tables/album.table.js';
+import { AssetExifTable } from 'src/schema/tables/asset-exif.table.js';
+import { AssetTable } from 'src/schema/tables/asset.table.js';
+import { PluginTable } from 'src/schema/tables/plugin.table.js';
+import type { UserMetadataItem } from 'src/types.js';
 
 export type AuthUser = {
   id: string;
@@ -81,6 +82,17 @@ export type ApiKey = {
   permissions: Permission[];
 };
 
+export type Passkey = {
+  id: string;
+  name: string | null;
+  userId: string;
+  credentialId: string;
+  transports: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  usedAt: Date | null;
+};
+
 export type Tag = {
   id: string;
   value: string;
@@ -133,13 +145,14 @@ export type User = {
 };
 
 export type UserAdmin = User & {
+  clusterGroupId: string;
   storageLabel: string | null;
   shouldChangePassword: boolean;
   isAdmin: boolean;
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
-  oauthId: string;
+  oauthId: string | null;
   quotaSizeInBytes: number | null;
   quotaUsageInBytes: number;
   status: UserStatus;
@@ -241,7 +254,7 @@ export type Exif = Omit<Selectable<AssetExifTable>, 'updatedAt' | 'updateId' | '
 
 export type Person = {
   createdAt: Date;
-  id: string;
+  personGroupId: string;
   ownerId: string;
   updatedAt: Date;
   updateId: string;
@@ -252,7 +265,12 @@ export type Person = {
   faceAssetId: string | null;
   isHidden: boolean;
   thumbnailPath: string;
+  otherPeople: { sharedById: string; name: string; birthDate: string | null; role: PersonUserRole }[];
+  sharedBy: PersonUser[];
+  sharedWith: PersonUser[];
 };
+
+export type PersonUser = User & { role: PersonUserRole };
 
 export type AssetFace = {
   id: string;
@@ -264,18 +282,21 @@ export type AssetFace = {
   boundingBoxY2: number;
   imageHeight: number;
   imageWidth: number;
-  personId: string | null;
+  personGroupId: string | null;
   sourceType: SourceType;
   person?: ShallowDehydrateObject<Person> | null;
   updatedAt: Date;
   updateId: string;
   isVisible: boolean;
+  ownerId: string;
+  assetVisibility: AssetVisibility;
+  assetDeletedAt: Date | null;
 };
 
 export type Plugin = Selectable<PluginTable>;
 
 const userColumns = ['id', 'name', 'email', 'avatarColor', 'profileImagePath', 'profileChangedAt'] as const;
-const userWithPrefixColumns = [
+const user2Columns = [
   'user2.id',
   'user2.name',
   'user2.email',
@@ -303,6 +324,36 @@ export const columns = {
     'asset.width',
     'asset.height',
     'asset.isEdited',
+  ],
+  searchAsset: [
+    'asset.id',
+    'asset.updateId',
+    'asset.createdAt',
+    'asset.updatedAt',
+    'asset.deletedAt',
+    'asset.status',
+    'asset.checksum',
+    'asset.checksumAlgorithm',
+    'asset.duplicateId',
+    'asset.duration',
+    'asset.fileCreatedAt',
+    'asset.fileModifiedAt',
+    'asset.isExternal',
+    'asset.isFavorite',
+    'asset.isOffline',
+    'asset.isEdited',
+    'asset.visibility',
+    'asset.libraryId',
+    'asset.livePhotoVideoId',
+    'asset.localDateTime',
+    'asset.originalFileName',
+    'asset.originalPath',
+    'asset.ownerId',
+    'asset.stackId',
+    'asset.thumbhash',
+    'asset.type',
+    'asset.width',
+    'asset.height',
   ],
   workflowAssetV1: [
     'asset.id',
@@ -343,9 +394,18 @@ export const columns = {
   authApiKey: ['api_key.id', 'api_key.permissions'],
   authSession: ['session.id', 'session.updatedAt', 'session.pinExpiresAt', 'session.appVersion'],
   user: userColumns,
-  userWithPrefix: userWithPrefixColumns,
+  user2: user2Columns,
+  userPrefix: [
+    'user.id',
+    'user.name',
+    'user.email',
+    'user.avatarColor',
+    'user.profileImagePath',
+    'user.profileChangedAt',
+  ],
   userAdmin: [
     ...userColumns,
+    'clusterGroupId',
     'createdAt',
     'updatedAt',
     'deletedAt',
@@ -360,6 +420,7 @@ export const columns = {
   ],
   tag: ['tag.id', 'tag.value', 'tag.createdAt', 'tag.updatedAt', 'tag.color', 'tag.parentId'],
   apiKey: ['id', 'name', 'userId', 'createdAt', 'updatedAt', 'permissions'],
+  passkey: ['id', 'name', 'userId', 'credentialId', 'transports', 'createdAt', 'updatedAt', 'usedAt'],
   notification: ['id', 'createdAt', 'level', 'type', 'title', 'description', 'data', 'readAt'],
   pluginMethod: [
     'plugin_method.name',
@@ -368,6 +429,7 @@ export const columns = {
     'plugin_method.types',
     'plugin_method.schema',
     'plugin_method.hostFunctions',
+    'plugin_method.allowedHosts',
     'plugin_method.uiHints',
   ],
   syncAsset: [
@@ -383,6 +445,27 @@ export const columns = {
     'asset.type',
     'asset.deletedAt',
     'asset.isFavorite',
+    'asset.visibility',
+    'asset.duration',
+    'asset.livePhotoVideoId',
+    'asset.stackId',
+    'asset.libraryId',
+    'asset.width',
+    'asset.height',
+    'asset.isEdited',
+  ],
+  syncAlbumAsset: [
+    'asset.id',
+    'asset.ownerId',
+    'asset.originalFileName',
+    'asset.thumbhash',
+    'asset.checksum',
+    'asset.fileCreatedAt',
+    'asset.fileModifiedAt',
+    'asset.createdAt',
+    'asset.localDateTime',
+    'asset.type',
+    'asset.deletedAt',
     'asset.visibility',
     'asset.duration',
     'asset.livePhotoVideoId',
@@ -417,6 +500,20 @@ export const columns = {
   syncStack: ['stack.id', 'stack.createdAt', 'stack.updatedAt', 'stack.primaryAssetId', 'stack.ownerId'],
   syncUser: ['id', 'name', 'email', 'avatarColor', 'deletedAt', 'updateId', 'profileImagePath', 'profileChangedAt'],
   stack: ['stack.id', 'stack.primaryAssetId', 'ownerId'],
+  syncAssetFace: [
+    'asset_face.id',
+    'asset_face.assetId',
+    'asset_face.personGroupId as personId',
+    'asset_face.imageWidth',
+    'asset_face.imageHeight',
+    'asset_face.boundingBoxX1',
+    'asset_face.boundingBoxY1',
+    'asset_face.boundingBoxX2',
+    'asset_face.boundingBoxY2',
+    'asset_face.sourceType',
+    'asset_face.isVisible',
+    'asset_face.deletedAt',
+  ],
   syncAssetExif: [
     'asset_exif.assetId',
     'asset_exif.description',
@@ -443,6 +540,23 @@ export const columns = {
     'asset_exif.profileDescription',
     'asset_exif.rating',
     'asset_exif.fps',
+  ],
+  syncAssetOcr: [
+    'asset_ocr.id',
+    'asset_ocr.assetId',
+    'asset_ocr.x1',
+    'asset_ocr.y1',
+    'asset_ocr.x2',
+    'asset_ocr.y2',
+    'asset_ocr.x3',
+    'asset_ocr.y3',
+    'asset_ocr.x4',
+    'asset_ocr.y4',
+    'asset_ocr.text',
+    'asset_ocr.boxScore',
+    'asset_ocr.textScore',
+    'asset_ocr.updateId',
+    'asset_ocr.isVisible',
   ],
   syncAssetEdit: [
     'asset_edit.id',

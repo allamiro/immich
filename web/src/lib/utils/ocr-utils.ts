@@ -1,8 +1,8 @@
+import type { OcrBoundingBox } from '#lib/stores/ocr.svelte.ts';
+import { mapNormalizedToContent, type Point, type Size } from '#lib/utils/container-utils.ts';
 import { clamp } from 'lodash-es';
-import type { OcrBoundingBox } from '$lib/stores/ocr.svelte';
-import { mapNormalizedToContent, type Point, type Size } from '$lib/utils/container-utils';
 
-export type { Point } from '$lib/utils/container-utils';
+export type { Point } from '#lib/utils/container-utils.ts';
 
 const distance = (p1: Point, p2: Point) => Math.hypot(p2.x - p1.x, p2.y - p1.y);
 
@@ -17,7 +17,7 @@ export type OcrBox = {
 };
 
 const CJK_PATTERN =
-  /[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF\uFF00-\uFFEF]/;
+  /[\u{3000}-\u{303F}\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{F900}-\u{FAFF}\u{AC00}-\u{D7AF}\u{FF00}-\u{FFEF}]/u;
 
 const VERTICAL_ASPECT_RATIO = 1.5;
 
@@ -31,10 +31,10 @@ const getVerticalMode = (width: number, height: number, text: string): VerticalM
 };
 
 /**
- * Calculate bounding box transform from OCR points. Result matrix can be used as input for css matrix3d.
- * @param points - Array of 4 corner points of the bounding box
- * @returns 4x4 matrix to transform the div with text onto the polygon defined by the corner points, and size to set on the source div.
- */
+Calculate bounding box transform from OCR points. Result matrix can be used as input for css matrix3d.
+@param points - Array of 4 corner points of the bounding box
+@returns 4x4 matrix to transform the div with text onto the polygon defined by the corner points, and size to set on the source div.
+*/
 export const calculateBoundingBoxMatrix = (points: Point[]): Size & { matrix: number[] } => {
   const [topLeft, topRight, bottomRight, bottomLeft] = points;
 
@@ -121,7 +121,6 @@ export const calculateFittedFontSize = (
       return clamp(fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE);
     }
 
-    // eslint-disable-next-line tscompat/tscompat
     context.font = getReferenceFont();
 
     let maxCharWidth = 0;
@@ -147,7 +146,6 @@ export const calculateFittedFontSize = (
   }
 
   // Unsupported in Safari iOS <16.6; falls back to default canvas font, giving less accurate but functional sizing
-  // eslint-disable-next-line tscompat/tscompat
   context.font = getReferenceFont();
 
   const metrics = context.measureText(text);

@@ -1,15 +1,16 @@
 import { Kysely } from 'kysely';
-import { SyncEntityType, SyncRequestType } from 'src/enum';
-import { AssetRepository } from 'src/repositories/asset.repository';
-import { PartnerRepository } from 'src/repositories/partner.repository';
-import { UserRepository } from 'src/repositories/user.repository';
-import { DB } from 'src/schema';
-import { SyncTestContext } from 'test/medium.factory';
-import { factory } from 'test/small.factory';
-import { getKyselyDB, wait } from 'test/utils';
+import { SyncEntityType, SyncRequestType } from 'src/enum.js';
+import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { PartnerRepository } from 'src/repositories/partner.repository.js';
+import { UserRepository } from 'src/repositories/user.repository.js';
+import { DB } from 'src/schema/index.js';
+import { SyncTestContext } from 'test/medium.factory.js';
+import { factory } from 'test/small.factory.js';
+import { getKyselyDB, wait } from 'test/utils.js';
 
 let defaultDatabase: Kysely<DB>;
 
+// eslint-disable-next-line unicorn/no-unnecessary-parameters
 const setup = async (db?: Kysely<DB>) => {
   const ctx = new SyncTestContext(db || defaultDatabase);
   const { auth, user, session } = await ctx.newSyncAuthUser();
@@ -277,5 +278,84 @@ describe(SyncRequestType.PartnerAssetsV2, () => {
 
     await ctx.syncAckAll(auth, newResponse);
     await ctx.assertSyncIsComplete(auth, [SyncRequestType.PartnerAssetsV2]);
+  });
+
+  it('should not resend an already-acked item when backfill resumes', async () => {
+    const { auth, ctx } = await setup();
+    const { user: user2 } = await ctx.newUser();
+    const { user: user3 } = await ctx.newUser();
+
+    // backfill needs assets with an older updateId
+    const { asset: partnerAsset1 } = await ctx.newAsset({ ownerId: user3.id });
+    await wait(2);
+    const { asset: partnerAsset2 } = await ctx.newAsset({ ownerId: user3.id });
+
+    await wait(2);
+
+    // backfill needs an initial ack, otherwise it syncs everything
+    const { asset: initialAsset } = await ctx.newAsset({ ownerId: user2.id });
+    await ctx.newPartner({ sharedById: user2.id, sharedWithId: auth.user.id });
+
+    const setupResponse = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(setupResponse).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ id: initialAsset.id }),
+        type: SyncEntityType.PartnerAssetV2,
+      }),
+      expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 }),
+    ]);
+    await ctx.syncAckAll(auth, setupResponse);
+
+    // partner share to trigger backfill
+    await ctx.newPartner({ sharedById: user3.id, sharedWithId: auth.user.id });
+
+    const response1 = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(response1).toEqual([
+      // receive both
+      expect.objectContaining({
+        data: expect.objectContaining({ id: partnerAsset1.id }),
+        type: SyncEntityType.PartnerAssetBackfillV2,
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({ id: partnerAsset2.id }),
+        type: SyncEntityType.PartnerAssetBackfillV2,
+      }),
+      expect.objectContaining({ type: SyncEntityType.SyncAckV1 }),
+      expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 }),
+    ]);
+
+    // ack 1st
+    await ctx.sut.setAcks(auth, { acks: [response1[0].ack] });
+
+    const response2 = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(response2).toEqual([
+      // receive 2nd
+      expect.objectContaining({
+        data: expect.objectContaining({ id: partnerAsset2.id }),
+        type: SyncEntityType.PartnerAssetBackfillV2,
+      }),
+      expect.objectContaining({ type: SyncEntityType.SyncAckV1 }),
+      expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 }),
+    ]);
+
+    await ctx.syncAckAll(auth, response2);
+    await ctx.assertSyncIsComplete(auth, [SyncRequestType.PartnerAssetsV2]);
+  });
+
+  it('should hide isFavorite for partner assets', async () => {
+    const { auth, ctx } = await setup();
+    const { user: user2 } = await ctx.newUser();
+    const { asset } = await ctx.newAsset({ ownerId: user2.id, isFavorite: true });
+    await ctx.newPartner({ sharedById: user2.id, sharedWithId: auth.user.id });
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(response).toEqual([
+      {
+        ack: expect.any(String),
+        data: expect.objectContaining({ id: asset.id, isFavorite: false }),
+        type: SyncEntityType.PartnerAssetV2,
+      },
+      expect.objectContaining({ type: SyncEntityType.SyncCompleteV1 }),
+    ]);
   });
 });

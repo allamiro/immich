@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { shortcuts } from '$lib/actions/shortcut';
-  import { transformManager } from '$lib/managers/edit/transform-manager.svelte';
-  import { Button, HStack, IconButton } from '@immich/ui';
+  import { transformManager } from '#lib/managers/edit/transform-manager.svelte.ts';
+  import { Button, HStack, IconButton, shortcuts } from '@immich/ui';
   import { mdiFlipHorizontal, mdiFlipVertical, mdiRotateLeft, mdiRotateRight } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
@@ -35,11 +34,10 @@
     }
 
     if (isRotated) {
-      let [width, height] = ratio.value.split(':');
+      let [width, height] = ratio.value.split(':', 2);
       return `${height}:${width}`;
-    } else {
-      return ratio.value;
     }
+    return ratio.value;
   }
 
   function ratioSelected(ratio: AspectRatioOption): boolean {
@@ -69,11 +67,11 @@
   }
 </script>
 
-<svelte:document
-  use:shortcuts={[
+<svelte:window
+  {@attach shortcuts([
     { shortcut: { key: ']' }, onShortcut: () => rotateImage(90) },
     { shortcut: { key: '[' }, onShortcut: () => rotateImage(-90) },
-  ]}
+  ])}
 />
 
 <div class="mt-3 px-4">

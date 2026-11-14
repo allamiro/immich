@@ -1,19 +1,21 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Put, Query } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { Endpoint, HistoryBuilder } from 'src/decorators';
-import { AuthDto } from 'src/dtos/auth.dto';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
+import { Endpoint, HistoryBuilder } from 'src/decorators.js';
+import type { AuthDto } from 'src/dtos/auth.dto.js';
 import {
   WorkflowCreateDto,
+  WorkflowGetLogsDto,
+  WorkflowLogEntryDto,
   WorkflowResponseDto,
   WorkflowSearchDto,
   WorkflowShareResponseDto,
   WorkflowTriggerResponseDto,
   WorkflowUpdateDto,
-} from 'src/dtos/workflow.dto';
-import { Permission } from 'src/enum';
-import { Auth, Authenticated } from 'src/middleware/auth.guard';
-import { WorkflowService } from 'src/services/workflow.service';
-import { UUIDParamDto } from 'src/validation';
+} from 'src/dtos/workflow.dto.js';
+import { Permission } from 'src/enum.js';
+import { Auth, Authenticated } from 'src/middleware/auth.guard.js';
+import { WorkflowService } from 'src/services/workflow.service.js';
+import { UUIDParamDto } from 'src/validation.js';
 
 @ApiTags('Workflows')
 @Controller('workflows')
@@ -81,9 +83,20 @@ export class WorkflowController {
     summary: 'Update a workflow',
     description:
       'Update the information of a specific workflow by its ID. This endpoint can be used to update the workflow name, description, trigger type, filters and actions order, etc.',
-    history: HistoryBuilder.v3(),
+    history: new HistoryBuilder().added('v3.0.0').v3PatchMigration(),
   })
   updateWorkflow(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Body() dto: WorkflowUpdateDto,
+  ): Promise<WorkflowResponseDto> {
+    return this.service.update(auth, id, dto);
+  }
+
+  @Patch(':id')
+  @ApiExcludeEndpoint()
+  @Authenticated({ permission: Permission.WorkflowUpdate })
+  updateWorkflowV3(
     @Auth() auth: AuthDto,
     @Param() { id }: UUIDParamDto,
     @Body() dto: WorkflowUpdateDto,
@@ -101,5 +114,20 @@ export class WorkflowController {
   })
   deleteWorkflow(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<void> {
     return this.service.delete(auth, id);
+  }
+
+  @Get(':id/logs')
+  @Authenticated({ permission: Permission.WorkflowLogs })
+  @Endpoint({
+    summary: 'Retrieve workflow logs',
+    description: 'Retrieve logs of a workflows runs by ID',
+    history: HistoryBuilder.v3(),
+  })
+  getWorkflowLogs(
+    @Auth() auth: AuthDto,
+    @Param() { id }: UUIDParamDto,
+    @Query() dto: WorkflowGetLogsDto,
+  ): Promise<WorkflowLogEntryDto[]> {
+    return this.service.getLogs(auth, id, dto);
   }
 }

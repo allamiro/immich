@@ -1,14 +1,11 @@
 <script lang="ts">
-  import { cleanClass } from '$lib';
-  import QueueCardBadge from './QueueCardBadge.svelte';
-  import QueueCardButton from './QueueCardButton.svelte';
-  import Badge from '$lib/elements/Badge.svelte';
-  import { Route } from '$lib/route';
-  import { asQueueItem } from '$lib/services/queue.service';
-  import { locale } from '$lib/stores/preferences.store';
-  import { transformToTitleCase } from '$lib/utils';
+  import { cleanClass } from '#lib';
+  import { Route } from '#lib/route.ts';
+  import { asQueueItem } from '#lib/services/queue.service.ts';
+  import { locale } from '#lib/stores/preferences.store.ts';
+  import { transformToTitleCase } from '#lib/utils.ts';
   import { QueueCommand, type QueueCommandDto, type QueueResponseDto } from '@immich/sdk';
-  import { Icon, IconButton, Link } from '@immich/ui';
+  import { Badge, Icon, IconButton, Link } from '@immich/ui';
   import {
     mdiAlertCircle,
     mdiAllInclusive,
@@ -22,6 +19,8 @@
   } from '@mdi/js';
   import { type Component } from 'svelte';
   import { t } from 'svelte-i18n';
+  import QueueCardBadge from './QueueCardBadge.svelte';
+  import QueueCardButton from './QueueCardButton.svelte';
 
   interface Props {
     queue: QueueResponseDto;
@@ -37,14 +36,14 @@
 
   const { icon, title, subtitle } = $derived(asQueueItem($t, queue));
   const { statistics } = $derived(queue);
-  let waitingCount = $derived(statistics.waiting + statistics.paused + statistics.delayed);
+  let waitingCount = $derived(statistics.waiting + statistics.delayed);
   let isIdle = $derived(statistics.active + statistics.waiting === 0 && !queue.isPaused);
   let multipleButtons = $derived(allText || refreshText);
 
   const commonClasses = 'flex place-items-center justify-between w-full py-2 sm:py-4 pe-4 ps-6';
 </script>
 
-<div class="sm:rounded-9 flex flex-col overflow-hidden rounded-2xl bg-gray-100 sm:flex-row dark:bg-immich-dark-gray">
+<div class="flex flex-col rounded-2xl bg-gray-100 sm:flex-row dark:bg-immich-dark-gray" data-testid="queue-card">
   <div class="flex w-full flex-col">
     {#if queue.isPaused}
       <QueueCardBadge color="warning">{$t('paused')}</QueueCardBadge>
@@ -67,27 +66,16 @@
         />
         <div class="flex gap-2">
           {#if statistics.failed > 0}
-            <Badge>
-              <div class="flex flex-row gap-1">
-                <span class="text-sm">
-                  {$t('admin.jobs_failed', { values: { jobCount: statistics.failed.toLocaleString($locale) } })}
-                </span>
-                <IconButton
-                  color="primary"
-                  icon={mdiClose}
-                  aria-label={$t('clear_message')}
-                  size="tiny"
-                  shape="round"
-                  onclick={() => onCommand({ command: QueueCommand.ClearFailed, force: false })}
-                />
-              </div>
+            <Badge
+              onClose={() => onCommand({ command: QueueCommand.ClearFailed, force: false })}
+              translations={{ close: $t('clear_message') }}
+            >
+              {$t('admin.jobs_failed', { values: { jobCount: statistics.failed.toLocaleString($locale) } })}
             </Badge>
           {/if}
           {#if statistics.delayed > 0}
             <Badge>
-              <span class="text-sm">
-                {$t('admin.jobs_delayed', { values: { jobCount: statistics.delayed.toLocaleString($locale) } })}
-              </span>
+              {$t('admin.jobs_delayed', { values: { jobCount: statistics.delayed.toLocaleString($locale) } })}
             </Badge>
           {/if}
         </div>
@@ -98,8 +86,8 @@
       {/if}
 
       {#if description}
-        {@const SvelteComponent = description}
         <div class="text-sm dark:text-white">
+          {const SvelteComponent = $derived(description)}
           <SvelteComponent />
         </div>
       {/if}
@@ -131,7 +119,7 @@
       </div>
     </div>
   </div>
-  <div class="flex w-full flex-row overflow-hidden sm:w-32 sm:flex-col">
+  <div class="flex w-full flex-row sm:w-32 sm:flex-col">
     {#if disabled}
       <QueueCardButton
         disabled={true}
@@ -151,10 +139,8 @@
         </QueueCardButton>
       {/if}
       {#if queue.isPaused}
-        {@const size = waitingCount > 0 ? '24' : '48'}
         <QueueCardButton color="light-gray" onClick={() => onCommand({ command: QueueCommand.Resume, force: false })}>
-          <!-- size property is not reactive, so have to use width and height -->
-          <Icon icon={mdiFastForward} {size} />
+          <Icon icon={mdiFastForward} size={waitingCount > 0 ? '24' : '48'} />
           <span>{$t('resume')}</span>
         </QueueCardButton>
       {:else}

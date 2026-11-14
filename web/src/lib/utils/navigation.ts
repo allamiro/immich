@@ -1,21 +1,17 @@
+import { assetCacheManager } from '#lib/managers/AssetCacheManager.svelte.ts';
+import { Route } from '#lib/route.ts';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import type { RouteId } from '$app/types';
-import { assetCacheManager } from '$lib/managers/AssetCacheManager.svelte';
-import { Route } from '$lib/route';
 
 export type AssetGridRouteSearchParams = {
   at: string | null | undefined;
-};
-export const isExternalUrl = (url: string): boolean => {
-  return new URL(url, globalThis.location.href).origin !== globalThis.location.origin;
 };
 
 export const isPhotosRoute = (route?: string | null) => !!route?.startsWith('/(user)/photos/[[assetId=id]]');
 const isSharedLinkSlugRoute = (route?: string | null) => !!route?.startsWith('/(user)/s/[slug]');
 export const isSharedLinkRoute = (route?: string | null) =>
   !!route?.startsWith('/(user)/share/[key]') || isSharedLinkSlugRoute(route);
-export const isSearchRoute = (route?: string | null) => !!route?.startsWith('/(user)/search');
 export const isAlbumsRoute = (route?: string | null) => !!route?.startsWith('/(user)/albums/[albumId=id]');
 export const isPeopleRoute = (route?: string | null) => !!route?.startsWith('/(user)/people/[personId]');
 export const isLockedFolderRoute = (route?: string | null) => !!route?.startsWith('/(user)/locked');
@@ -33,11 +29,10 @@ function currentUrlWithoutAsset() {
   // off / instead of a subpath, unlike every other asset-containing route.
   if (isPhotosRoute(page.route.id)) {
     return Route.photos() + page.url.search;
-  } else if (isSharedLinkSlugRoute(page.route.id)) {
-    return Route.viewSharedLink({ slug: page.data.slug, key: page.data.key }) + page.url.search;
-  } else {
-    return page.url.pathname.replace(/(\/photos.*)$/, '') + page.url.search;
   }
+  return isSharedLinkSlugRoute(page.route.id)
+    ? Route.viewSharedLink({ slug: page.data.slug, key: page.data.key }) + page.url.search
+    : page.url.pathname.replace(/(\/photos.*)$/, '') + page.url.search;
 }
 
 export function currentUrlReplaceAssetId(assetId: string) {
@@ -45,7 +40,7 @@ export function currentUrlReplaceAssetId(assetId: string) {
   // always remove the assetGridScrollTargetParams
   params.delete('at');
   const paramsString = params.toString();
-  const searchparams = paramsString == '' ? '' : '?' + params.toString();
+  const searchparams = paramsString === '' ? '' : '?' + params.toString();
   // this contains special casing for the /photos/:assetId photos route, which hangs directly
   // off / instead of a subpath, unlike every other asset-containing route.
   return isPhotosRoute(page.route.id)
@@ -54,7 +49,7 @@ export function currentUrlReplaceAssetId(assetId: string) {
 }
 
 function replaceScrollTarget(url: string, searchParams?: AssetGridRouteSearchParams | null) {
-  const parsed = new URL(url, page.url);
+  const parsed = new URL(url, page.url.href);
 
   const { at: assetId } = searchParams || { at: null };
 
@@ -75,9 +70,7 @@ function currentUrl() {
 }
 
 interface Route {
-  /**
-   * The route to target, or 'current' to stay on current route.
-   */
+  /** The route to target, or 'current' to stay on current route. */
   targetRoute: string | 'current';
 }
 
@@ -96,10 +89,9 @@ type ImmichRoute = AssetRoute | AssetGridRoute;
 type NavOptions = {
   /* navigate even if url is the same */
   forceNavigate?: boolean | undefined;
-  replaceState?: boolean | undefined;
-  noScroll?: boolean | undefined;
-  keepFocus?: boolean | undefined;
-  invalidateAll?: boolean | undefined;
+  replace?: boolean | undefined;
+  reset?: boolean | undefined;
+  refreshAll?: boolean | undefined;
   state?: App.PageState | undefined;
 };
 
@@ -133,7 +125,8 @@ async function navigateAssetGridRoute(route: AssetGridRoute, options?: NavOption
 export function navigate(change: ImmichRoute, options?: NavOptions): Promise<void> {
   if (isAssetGridRoute(change)) {
     return navigateAssetGridRoute(change, options);
-  } else if (isAssetRoute(change)) {
+  }
+  if (isAssetRoute(change)) {
     return navigateAssetRoute(change, options);
   }
   // future navigation requests here
@@ -141,21 +134,17 @@ export function navigate(change: ImmichRoute, options?: NavOptions): Promise<voi
 }
 
 export const clearQueryParam = async (queryParam: string, url: URL) => {
-  if (url.searchParams.has(queryParam)) {
-    url.searchParams.delete(queryParam);
-    await goto(url, { keepFocus: true });
+  if (!url.searchParams.has(queryParam)) {
+    return;
   }
-};
 
-export const getQueryValue = (queryKey: string) => {
-  const url = globalThis.location.href;
-  const urlObject = new URL(url);
-  return urlObject.searchParams.get(queryKey);
+  url.searchParams.delete(queryParam);
+  await goto(url, { reset: false });
 };
 
 export const setQueryValue = async (queryKey: string, queryValue: string) => {
-  const url = globalThis.location.href;
+  const url = location.href;
   const urlObject = new URL(url);
   urlObject.searchParams.set(queryKey, queryValue);
-  await goto(urlObject, { keepFocus: true });
+  await goto(urlObject, { reset: false });
 };

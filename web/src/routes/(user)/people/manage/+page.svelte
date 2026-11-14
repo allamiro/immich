@@ -1,17 +1,17 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
-  import PeopleInfiniteScroll from '../PeopleInfiniteScroll.svelte';
-  import { goto } from '$app/navigation';
-  import UserPageLayout from '$lib/components/layouts/UserPageLayout.svelte';
-  import { ToggleVisibility } from '$lib/constants';
-  import { locale } from '$lib/stores/preferences.store';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
-  import { handleError } from '$lib/utils/handle-error';
+  import ImageThumbnail from '#lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import UserPageLayout from '#lib/components/layouts/UserPageLayout.svelte';
+  import { ToggleVisibility } from '#lib/constants.ts';
+  import { locale } from '#lib/stores/preferences.store.ts';
+  import { getPeopleThumbnailUrl } from '#lib/utils.ts';
+  import { handleError } from '#lib/utils/handle-error.ts';
   import { getAllPeople, updatePeople, type PersonResponseDto } from '@immich/sdk';
   import { Button, IconButton, toastManager } from '@immich/ui';
   import { mdiClose, mdiEye, mdiEyeOff, mdiEyeSettings, mdiRestart } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import { SvelteMap } from 'svelte/reactivity';
+  import { goto } from '$app/navigation';
+  import PeopleInfiniteScroll from '../PeopleInfiniteScroll.svelte';
   import type { PageData } from './$types';
 
   interface Props {
@@ -30,11 +30,8 @@
   const getNextVisibility = (toggleVisibility: ToggleVisibility) => {
     if (toggleVisibility === ToggleVisibility.SHOW_ALL) {
       return ToggleVisibility.HIDE_UNNANEMD;
-    } else if (toggleVisibility === ToggleVisibility.HIDE_UNNANEMD) {
-      return ToggleVisibility.HIDE_ALL;
-    } else {
-      return ToggleVisibility.SHOW_ALL;
     }
+    return toggleVisibility === ToggleVisibility.HIDE_UNNANEMD ? ToggleVisibility.HIDE_ALL : ToggleVisibility.SHOW_ALL;
   };
 
   const handleToggleVisibility = () => {
@@ -151,7 +148,7 @@
   <div class="flex flex-wrap gap-1 p-2 pb-8 md:px-8">
     <PeopleInfiniteScroll {people} hasNextPage={nextPage !== null} {loadNextPage}>
       {#snippet children({ person })}
-        {@const hidden = overrides.get(person.id) ?? person.isHidden}
+        {const hidden = $derived(overrides.get(person.id) ?? person.isHidden)}
         <button
           type="button"
           class="group relative size-full"
@@ -169,7 +166,9 @@
             preload={false}
           />
           {#if person.name}
-            <span class="absolute inset-s-0 bottom-2 w-full px-1 text-center font-medium text-white select-text">
+            <span
+              class="text-white-shadow absolute inset-s-0 bottom-2 w-full px-1 text-center font-medium text-white select-text"
+            >
               {person.name}
             </span>
           {/if}

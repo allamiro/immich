@@ -3,24 +3,31 @@ import 'dart:convert';
 
 import 'package:drift/drift.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/data/db/main/table/remote/album.drift.dart';
+import 'package:immich_mobile/data/db/main/table/remote/album_asset.drift.dart';
+import 'package:immich_mobile/data/db/main/table/remote/album_user.drift.dart';
+import 'package:immich_mobile/data/db/main/table/remote/asset.dart';
+import 'package:immich_mobile/data/db/main/table/remote/asset.drift.dart';
 import 'package:immich_mobile/domain/models/album/album.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/domain/models/user.model.dart';
-import 'package:immich_mobile/infrastructure/entities/remote_album.entity.drift.dart';
-import 'package:immich_mobile/infrastructure/entities/remote_album_asset.entity.drift.dart';
-import 'package:immich_mobile/infrastructure/entities/remote_album_user.entity.drift.dart';
-import 'package:immich_mobile/infrastructure/entities/remote_asset.entity.dart';
-import 'package:immich_mobile/infrastructure/entities/remote_asset.entity.drift.dart';
-import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.drift.dart';
+import 'package:immich_mobile/utils/datetime_helpers.dart';
 
 enum SortRemoteAlbumsBy { id, updatedAt }
 
-class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
-  final Drift _db;
-  const DriftRemoteAlbumRepository(this._db) : super(_db);
+@DriftAccessor()
+class RemoteAlbumRepository extends DatabaseAccessor<Drift> with $RemoteAlbumRepositoryMixin {
+  RemoteAlbumRepository(super.attachedDatabase);
+
+  Drift get _db => attachedDatabase;
 
   Future<List<RemoteAlbum>> getAll({Set<SortRemoteAlbumsBy> sortBy = const {SortRemoteAlbumsBy.updatedAt}}) {
-    final assetCount = _db.remoteAlbumAssetEntity.assetId.count(distinct: true);
+    // Count non-trashed assets via the joined asset table. Filtering trashed assets in the
+    // join condition (instead of the where clause) keeps albums whose assets are all trashed
+    // in the result, the same way truly empty albums are kept
+    final assetCount = _db.remoteAssetEntity.id.count(distinct: true);
 
     final query = _db.remoteAlbumEntity.select().join([
       leftOuterJoin(
@@ -30,7 +37,8 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
       ),
       leftOuterJoin(
         _db.remoteAssetEntity,
-        _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId),
+        _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId) &
+            _db.remoteAssetEntity.deletedAt.isNull(),
         useColumns: false,
       ),
       leftOuterJoin(
@@ -47,7 +55,6 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
       ),
     ]);
     query
-      ..where(_db.remoteAssetEntity.deletedAt.isNull())
       ..addColumns([assetCount])
       ..addColumns([_db.userEntity.name, _db.userEntity.id])
       ..addColumns([_db.remoteAlbumUserEntity.userId.count(distinct: true)])
@@ -79,7 +86,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
   }
 
   Future<RemoteAlbum?> get(String albumId) {
-    final assetCount = _db.remoteAlbumAssetEntity.assetId.count(distinct: true);
+    final assetCount = _db.remoteAssetEntity.id.count(distinct: true);
 
     final query =
         _db.remoteAlbumEntity.select().join([
@@ -90,7 +97,8 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
             ),
             leftOuterJoin(
               _db.remoteAssetEntity,
-              _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId),
+              _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId) &
+                  _db.remoteAssetEntity.deletedAt.isNull(),
               useColumns: false,
             ),
             leftOuterJoin(
@@ -106,7 +114,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
               useColumns: false,
             ),
           ])
-          ..where(_db.remoteAlbumEntity.id.equals(albumId) & _db.remoteAssetEntity.deletedAt.isNull())
+          ..where(_db.remoteAlbumEntity.id.equals(albumId))
           ..addColumns([assetCount])
           ..addColumns([_db.userEntity.name, _db.userEntity.id])
           ..addColumns([_db.remoteAlbumUserEntity.userId.count(distinct: true)])
@@ -187,7 +195,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     });
   }
 
-  Future<void> update(RemoteAlbum album) async {
+  Future<void> updateAlbum(RemoteAlbum album) async {
     await _db.remoteAlbumEntity.update().replace(
       RemoteAlbumEntityCompanion(
         id: Value(album.id),
@@ -240,7 +248,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
     });
   }
 
-  FutureOr<(DateTime, DateTime)> getDateRange(String albumId) {
+  Stream<(DateTime, DateTime)> watchDateRange(String albumId) {
     final query = _db.remoteAlbumAssetEntity.selectOnly()
       ..where(_db.remoteAlbumAssetEntity.albumId.equals(albumId))
       ..addColumns([_db.remoteAssetEntity.createdAt.min(), _db.remoteAssetEntity.createdAt.max()])
@@ -252,7 +260,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
       final minDate = row.read(_db.remoteAssetEntity.createdAt.min());
       final maxDate = row.read(_db.remoteAssetEntity.createdAt.max());
       return (minDate ?? DateTime.now(), maxDate ?? DateTime.now());
-    }).getSingle();
+    }).watchSingle();
   }
 
   Future<List<UserDto>> getSharedUsers(String albumId) async {
@@ -350,6 +358,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
             isFavorite: Value(source.isFavorite),
             visibility: const Value(AssetVisibility.timeline),
             isEdited: Value(source.isEdited),
+            groupDate: Value(timelineGroupDate(source.createdAt.toLocal())),
           ),
           mode: InsertMode.insertOrIgnore,
         );
@@ -542,7 +551,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
       return [];
     }
 
-    final assetCount = _db.remoteAlbumAssetEntity.assetId.count(distinct: true);
+    final assetCount = _db.remoteAssetEntity.id.count(distinct: true);
     final query =
         _db.remoteAlbumEntity.select().join([
             leftOuterJoin(
@@ -552,7 +561,8 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
             ),
             leftOuterJoin(
               _db.remoteAssetEntity,
-              _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId),
+              _db.remoteAssetEntity.id.equalsExp(_db.remoteAlbumAssetEntity.assetId) &
+                  _db.remoteAssetEntity.deletedAt.isNull(),
               useColumns: false,
             ),
             leftOuterJoin(
@@ -568,7 +578,7 @@ class DriftRemoteAlbumRepository extends DriftDatabaseRepository {
               useColumns: false,
             ),
           ])
-          ..where(_db.remoteAlbumEntity.id.isIn(albumIds) & _db.remoteAssetEntity.deletedAt.isNull())
+          ..where(_db.remoteAlbumEntity.id.isIn(albumIds))
           ..addColumns([assetCount])
           ..addColumns([_db.remoteAlbumUserEntity.userId.count(distinct: true)])
           ..addColumns([_db.userEntity.name, _db.userEntity.id])

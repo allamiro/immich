@@ -1,23 +1,19 @@
 <script lang="ts">
-  import { shortcut } from '$lib/actions/shortcut';
-  import ButtonContextMenu from '$lib/components/shared-components/context-menu/ButtonContextMenu.svelte';
-  import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
-  import { timeBeforeShowLoadingSpinner } from '$lib/constants';
-  import { activityManager } from '$lib/managers/activity-manager.svelte';
-  import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { authManager } from '$lib/managers/auth-manager.svelte';
-  import { Route } from '$lib/route';
-  import { locale } from '$lib/stores/preferences.store';
-  import { getAssetMediaUrl } from '$lib/utils';
-  import { getAssetType } from '$lib/utils/asset-utils';
-  import { handleError } from '$lib/utils/handle-error';
-  import { isTenMinutesApart } from '$lib/utils/timesince';
-  import { ReactionType, type ActivityResponseDto, type AlbumUserResponseDto, type AssetTypeEnum } from '@immich/sdk';
-  import { Icon, IconButton, LoadingSpinner, Textarea, toastManager } from '@immich/ui';
-  import { mdiClose, mdiDeleteOutline, mdiDotsVertical, mdiSend, mdiThumbUp } from '@mdi/js';
+  import { timeBeforeShowLoadingSpinner } from '#lib/constants.ts';
+  import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import { createActivityMutation, deleteActivityMutation, getActivitiesQuery } from '#lib/queries/activity.query.ts';
+  import { executeMutation } from '#lib/queries/client.ts';
+  import { Route } from '#lib/route.ts';
+  import { locale } from '#lib/stores/preferences.store.ts';
+  import { getAssetMediaUrl } from '#lib/utils.ts';
+  import { isTenMinutesApart } from '#lib/utils/timesince.ts';
+  import { AssetTypeEnum, ReactionType, type ActivityResponseDto, type AlbumUserResponseDto } from '@immich/sdk';
+  import { ContextMenuButton, Icon, IconButton, LoadingSpinner, Textarea, shortcut } from '@immich/ui';
+  import { mdiClose, mdiSend, mdiThumbUp, mdiTrashCanOutline } from '@mdi/js';
+  import { createQuery } from '@tanstack/svelte-query';
   import * as luxon from 'luxon';
   import { t } from 'svelte-i18n';
-  import { fromAction } from 'svelte/attachments';
   import UserAvatar from '../shared-components/UserAvatar.svelte';
 
   const units: Intl.RelativeTimeFormatUnit[] = ['year', 'month', 'week', 'day', 'hour', 'minute', 'second'];
@@ -49,6 +45,9 @@
 
   let { assetId = undefined, albumId, assetType = undefined, albumUsers, disabled }: Props = $props();
 
+  const query = createQuery(() => getActivitiesQuery({ albumId, assetId }));
+  const activities = $derived(query.data ?? []);
+
   let innerHeight: number = $state(0);
   let activityHeight: number = $state(0);
   let chatHeight: number = $state(0);
@@ -56,6 +55,8 @@
   let previousAssetId: string | undefined = $state(assetId);
   let message = $state('');
   let isSendingMessage = $state(false);
+  let scrollContainer: HTMLElement | undefined = $state();
+  let hasScrolledToBottom = false;
   const isAlbumOwner = $derived(albumUsers[0].user.id === authManager.user.id);
 
   const timeOptions: Intl.DateTimeFormatOptions = {
@@ -67,18 +68,16 @@
     hour12: false,
   };
 
-  const handleDeleteReaction = async (reaction: ActivityResponseDto, index: number) => {
-    try {
-      await activityManager.deleteActivity(reaction, index);
-
-      const deleteMessages: Record<ReactionType, string> = {
-        [ReactionType.Comment]: $t('comment_deleted'),
-        [ReactionType.Like]: $t('like_deleted'),
-      };
-      toastManager.primary(deleteMessages[reaction.type]);
-    } catch (error) {
-      handleError(error, $t('errors.unable_to_remove_reaction'));
-    }
+  const handleDeleteReaction = (reaction: ActivityResponseDto) => {
+    const successToast = reaction.type === ReactionType.Comment ? 'comment_deleted' : 'like_deleted';
+    return executeMutation(
+      () =>
+        deleteActivityMutation({
+          success: { toast: successToast },
+          error: { toast: 'errors.unable_to_remove_reaction' },
+        }),
+      [{ id: reaction.id }],
+    );
   };
 
   const handleSendComment = async () => {
@@ -86,21 +85,26 @@
       return;
     }
     const timeout = setTimeout(() => (isSendingMessage = true), timeBeforeShowLoadingSpinner);
-    try {
-      await activityManager.addActivity({ albumId, assetId, type: ReactionType.Comment, comment: message });
-
-      message = '';
-    } catch (error) {
-      handleError(error, $t('errors.unable_to_add_comment'));
-    } finally {
-      clearTimeout(timeout);
-    }
+    await executeMutation(
+      createActivityMutation,
+      [{ activityCreateDto: { albumId, assetId, type: ReactionType.Comment, comment: message } }],
+      { onSuccess: () => (message = '') },
+    );
+    clearTimeout(timeout);
     isSendingMessage = false;
   };
 
   $effect(() => {
-    if (assetId && previousAssetId != assetId) {
+    if (assetId && previousAssetId !== assetId) {
       previousAssetId = assetId;
+      hasScrolledToBottom = false;
+    }
+  });
+
+  $effect(() => {
+    if (scrollContainer && activities.length > 0 && !hasScrolledToBottom) {
+      hasScrolledToBottom = true;
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
   });
 
@@ -109,6 +113,25 @@
     await handleSendComment();
   };
 </script>
+
+{#snippet reactionMenu(reaction: ActivityResponseDto, title: string)}
+  {#if reaction.user.id === authManager.user.id || isAlbumOwner}
+    <ContextMenuButton
+      translations={{ open_menu: title }}
+      position="top-right"
+      class="shrink-0"
+      size="small"
+      items={[
+        {
+          icon: mdiTrashCanOutline,
+          title: $t('remove'),
+          color: 'danger',
+          onAction: () => handleDeleteReaction(reaction),
+        },
+      ]}
+    />
+  {/if}
+{/snippet}
 
 <div class="relative h-full overflow-y-hidden border-l border-subtle bg-subtle" bind:offsetHeight={innerHeight}>
   <div class="size-full">
@@ -128,12 +151,13 @@
     </div>
     {#if innerHeight}
       <div
+        bind:this={scrollContainer}
         class="relative w-full immich-scrollbar overflow-y-auto px-2"
         style="height: {divHeight}px;padding-bottom: {chatHeight}px"
       >
-        {#each activityManager.activities as reaction, index (reaction.id)}
+        {#each activities as reaction, index (reaction.id)}
           {#if reaction.type === ReactionType.Comment}
-            <div class="mt-3 flex justify-start gap-4 rounded-lg bg-gray-200 py-3 ps-3 dark:bg-gray-800">
+            <div class="mt-3 flex justify-start gap-4 rounded-lg bg-gray-200 p-3 dark:bg-gray-800">
               <div class="flex items-center">
                 <UserAvatar user={reaction.user} size="sm" />
               </div>
@@ -148,27 +172,10 @@
                   />
                 </a>
               {/if}
-              {#if reaction.user.id === authManager.user.id || isAlbumOwner}
-                <div class="me-4">
-                  <ButtonContextMenu
-                    icon={mdiDotsVertical}
-                    title={$t('comment_options')}
-                    align="top-right"
-                    direction="left"
-                    size="small"
-                  >
-                    <MenuOption
-                      activeColor="bg-red-200"
-                      icon={mdiDeleteOutline}
-                      text={$t('remove')}
-                      onClick={() => handleDeleteReaction(reaction, index)}
-                    />
-                  </ButtonContextMenu>
-                </div>
-              {/if}
+              {@render reactionMenu(reaction, $t('comment_options'))}
             </div>
 
-            {#if (index != activityManager.activities.length - 1 && !shouldGroup(activityManager.activities[index].createdAt, activityManager.activities[index + 1].createdAt)) || index === activityManager.activities.length - 1}
+            {#if (index !== activities.length - 1 && !shouldGroup(activities[index].createdAt, activities[index + 1].createdAt)) || index === activities.length - 1}
               <div
                 class="w-full px-2 pt-1 text-right text-sm text-gray-500 dark:text-gray-300"
                 title={new Date(reaction.createdAt).toLocaleDateString(undefined, timeOptions)}
@@ -177,17 +184,15 @@
               </div>
             {/if}
           {:else if reaction.type === ReactionType.Like}
+            {const type = $derived(
+              assetType === AssetTypeEnum.Image || assetType === AssetTypeEnum.Video ? assetType.toLowerCase() : null,
+            )}
             <div class="relative">
-              <div class="mt-3 flex items-center gap-4 py-3 ps-3 text-sm">
+              <div class="mt-3 flex items-center gap-4 p-3 text-sm">
                 <div class="text-primary"><Icon icon={mdiThumbUp} size="20" /></div>
 
                 <div class="w-full" title={`${reaction.user.name} (${reaction.user.email})`}>
-                  {$t('user_liked', {
-                    values: {
-                      user: reaction.user.name,
-                      type: assetType ? getAssetType(assetType).toLowerCase() : null,
-                    },
-                  })}
+                  {$t('user_liked', { values: { user: reaction.user.name, type } })}
                 </div>
                 {#if assetId === undefined && reaction.assetId}
                   <a class="aspect-square size-19" href={Route.viewAlbumAsset({ albumId, assetId: reaction.assetId })}>
@@ -198,26 +203,9 @@
                     />
                   </a>
                 {/if}
-                {#if reaction.user.id === authManager.user.id || isAlbumOwner}
-                  <div class="me-4">
-                    <ButtonContextMenu
-                      icon={mdiDotsVertical}
-                      title={$t('reaction_options')}
-                      align="top-right"
-                      direction="left"
-                      size="small"
-                    >
-                      <MenuOption
-                        activeColor="bg-red-200"
-                        icon={mdiDeleteOutline}
-                        text={$t('remove')}
-                        onClick={() => handleDeleteReaction(reaction, index)}
-                      />
-                    </ButtonContextMenu>
-                  </div>
-                {/if}
+                {@render reactionMenu(reaction, $t('reaction_options'))}
               </div>
-              {#if (index != activityManager.activities.length - 1 && isTenMinutesApart(activityManager.activities[index].createdAt, activityManager.activities[index + 1].createdAt)) || index === activityManager.activities.length - 1}
+              {#if (index !== activities.length - 1 && isTenMinutesApart(activities[index].createdAt, activities[index + 1].createdAt)) || index === activities.length - 1}
                 <div
                   class="w-full px-2 pt-1 text-right text-sm text-gray-500 dark:text-gray-300"
                   title={new Date(reaction.createdAt).toLocaleDateString(navigator.language, timeOptions)}
@@ -245,10 +233,10 @@
             rows={1}
             grow
             placeholder={disabled ? $t('comments_are_disabled') : $t('say_something')}
-            {@attach fromAction(shortcut, () => ({
+            {@attach shortcut({
               shortcut: { key: 'Enter' },
               onShortcut: () => handleSendComment(),
-            }))}
+            })}
             class="{disabled
               ? 'cursor-not-allowed'
               : ''} max-h-56 w-full resize-none items-center overflow-y-auto bg-gray-200 pe-2 leading-4 ring-0! outline-none dark:bg-gray-200"

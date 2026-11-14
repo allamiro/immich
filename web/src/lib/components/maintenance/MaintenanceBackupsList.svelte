@@ -1,10 +1,9 @@
 <script lang="ts">
-  import HeaderActionButton from '$lib/components/HeaderActionButton.svelte';
-  import MaintenanceBackupEntry from '$lib/components/maintenance/MaintenanceBackupEntry.svelte';
-  import OnEvents from '$lib/components/OnEvents.svelte';
-  import { handleUploadDatabaseBackup } from '$lib/services/database-backups.service';
-  import type { DatabaseBackupDto } from '@immich/sdk';
-  import { listDatabaseBackups } from '@immich/sdk';
+  import HeaderActionButton from '#lib/components/HeaderActionButton.svelte';
+  import OnEvents from '#lib/components/OnEvents.svelte';
+  import MaintenanceBackupEntry from '#lib/components/maintenance/MaintenanceBackupEntry.svelte';
+  import { getDatabaseBackupDateTime, handleUploadDatabaseBackup } from '#lib/services/database-backups.service.ts';
+  import { listDatabaseBackups, type DatabaseBackupDto } from '@immich/sdk';
   import { Card, CardBody, HStack, Icon, ProgressBar, Stack, Text } from '@immich/ui';
   import { mdiCalendar, mdiTrayArrowUp } from '@mdi/js';
   import { DateTime } from 'luxon';
@@ -51,13 +50,12 @@
     const unknownDateKey = $t('unknown_date');
 
     for (const backup of backups) {
-      const timezone = backup.timezone;
-      const dateMatch = backup.filename.match(/\d+T\d+/);
+      const backupDateTime = getDatabaseBackupDateTime(backup.filename, backup.timezone);
       let dateKey: string;
       let dt: DateTime;
 
-      if (dateMatch) {
-        dt = DateTime.fromFormat(dateMatch[0], "yyyyMMdd'T'HHmmss", { zone: timezone });
+      if (backupDateTime) {
+        dt = backupDateTime;
         dateKey = dt.toFormat('LLLL d, yyyy');
       } else {
         dt = DateTime.fromMillis(0);
@@ -71,7 +69,7 @@
     }
 
     // Sort by date descending (newest first), but put unknown date at the top
-    const sortedEntries = [...groups.entries()].sort((a, b) => {
+    const sortedEntries = [...groups].sort((a, b) => {
       if (a[0] === unknownDateKey) {
         return -1;
       }
@@ -115,7 +113,7 @@
 
   <hr />
 
-  {#each [...groupedBackups.entries()] as [dateGroup, groupBackups] (dateGroup)}
+  {#each [...groupedBackups] as [dateGroup, groupBackups] (dateGroup)}
     <Stack gap={2}>
       <div class="mt-5 mb-1">
         <div class="flex w-max place-items-center gap-2 rounded-xl bg-primary-50 px-4 py-2">

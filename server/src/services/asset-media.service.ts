@@ -1,24 +1,23 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
-import { extname } from 'node:path';
 import sanitize from 'sanitize-filename';
-import { StorageCore } from 'src/cores/storage.core';
-import { AuthSharedLink } from 'src/database';
+import { StorageCore } from 'src/cores/storage.core.js';
+import { Asset, AuthSharedLink } from 'src/database.js';
 import {
   AssetBulkUploadCheckResponseDto,
   AssetMediaResponseDto,
   AssetMediaStatus,
   AssetRejectReason,
   AssetUploadAction,
-} from 'src/dtos/asset-media-response.dto';
+} from 'src/dtos/asset-media-response.dto.js';
 import {
   AssetBulkUploadCheckDto,
   AssetMediaCreateDto,
   AssetMediaOptionsDto,
   AssetMediaSize,
   UploadFieldName,
-} from 'src/dtos/asset-media.dto';
-import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
+} from 'src/dtos/asset-media.dto.js';
+import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto.js';
+import { AuthDto, isEditedOnly, isMetadataHidden } from 'src/dtos/auth.dto.js';
 import {
   AssetFileType,
   AssetVisibility,
@@ -27,16 +26,16 @@ import {
   JobName,
   Permission,
   StorageFolder,
-} from 'src/enum';
-import { AuthRequest } from 'src/middleware/auth.guard';
-import { BaseService } from 'src/services/base.service';
-import { UploadFile, UploadRequest } from 'src/types';
-import { requireUploadAccess } from 'src/utils/access';
-import { asUploadRequest, onBeforeLink } from 'src/utils/asset.util';
-import { isAssetChecksumConstraint } from 'src/utils/database';
-import { getFilenameExtension, getFileNameWithoutExtension, ImmichFileResponse } from 'src/utils/file';
-import { mimeTypes } from 'src/utils/mime-types';
-import { fromChecksum } from 'src/utils/request';
+} from 'src/enum.js';
+import { AuthRequest } from 'src/middleware/auth.guard.js';
+import { BaseService } from 'src/services/base.service.js';
+import type { UploadFile, UploadRequest } from 'src/types.js';
+import { requireUploadAccess } from 'src/utils/access.js';
+import { asUploadRequest, onBeforeLink } from 'src/utils/asset.util.js';
+import { isAssetChecksumConstraint } from 'src/utils/database.js';
+import { ImmichFileResponse, getFileNameWithoutExtension, getFilenameExtension } from 'src/utils/file.js';
+import { mimeTypes } from 'src/utils/mime-types.js';
+import { fromChecksum } from 'src/utils/request.js';
 
 export interface AssetMediaRedirectResponse {
   targetSize: AssetMediaSize | 'original';
@@ -48,6 +47,8 @@ export class AssetMediaService extends BaseService {
     if (!checksum) {
       return;
     }
+
+    await this.requireAccess({ auth, permission: Permission.AssetUpload, ids: [auth.user.id] });
 
     const assetId = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
     if (!assetId) {
@@ -92,8 +93,7 @@ export class AssetMediaService extends BaseService {
   getUploadFilename({ auth, fieldName, file, body }: UploadRequest): string {
     requireUploadAccess(auth);
 
-    const extension = extname(body.filename || file.originalName);
-
+    const extension = getFilenameExtension(body.filename || file.originalName);
     const lookup = {
       [UploadFieldName.ASSET_DATA]: extension,
       [UploadFieldName.SIDECAR_DATA]: '.xmp',
@@ -130,6 +130,7 @@ export class AssetMediaService extends BaseService {
     file: UploadFile,
     sidecarFile?: UploadFile,
   ): Promise<AssetMediaResponseDto> {
+    let asset: Asset | undefined;
     try {
       await this.requireAccess({
         auth,
@@ -141,13 +142,26 @@ export class AssetMediaService extends BaseService {
       this.requireQuota(auth, file.size);
 
       if (dto.livePhotoVideoId) {
+        if (auth.sharedLink) {
+          const ids = new Set([dto.livePhotoVideoId]);
+          const [assetIds1, assetIds2] = await Promise.all([
+            this.accessRepository.asset.checkSharedLinkAccess(auth.sharedLink.id, ids),
+            this.accessRepository.asset.checkOwnerAccess(auth.user.id, ids, false),
+          ]);
+
+          if (!assetIds1.intersection(assetIds2).has(dto.livePhotoVideoId)) {
+            throw new BadRequestException(`Not found or no ${Permission.AssetUpdate} permission`);
+          }
+        } else {
+          await this.requireAccess({ auth, permission: Permission.AssetUpdate, ids: [dto.livePhotoVideoId] });
+        }
         await onBeforeLink(
           { asset: this.assetRepository, event: this.eventRepository },
           { userId: auth.user.id, livePhotoVideoId: dto.livePhotoVideoId },
         );
       }
 
-      const asset = await this.assetRepository.create({
+      asset = await this.assetRepository.create({
         ownerId: auth.user.id,
         libraryId: null,
 
@@ -217,6 +231,11 @@ export class AssetMediaService extends BaseService {
         return { status: AssetMediaStatus.DUPLICATE, id: duplicateId };
       }
 
+      // clean up the asset row if one was created
+      if (asset) {
+        await this.assetRepository.remove({ id: asset.id });
+      }
+
       this.logger.error(`Error uploading file ${error}`, error?.stack);
       throw error;
     }
@@ -225,13 +244,9 @@ export class AssetMediaService extends BaseService {
   async downloadOriginal(auth: AuthDto, id: string, dto: AssetDownloadOriginalDto): Promise<ImmichFileResponse> {
     await this.requireAccess({ auth, permission: Permission.AssetDownload, ids: [id] });
 
-    if (auth.sharedLink) {
-      dto.edited = true;
-    }
-
     const { originalPath, originalFileName, editedPath } = await this.assetRepository.getForOriginal(
       id,
-      dto.edited ?? false,
+      isEditedOnly(auth, dto.edited),
     );
 
     const path = editedPath ?? originalPath!;
@@ -255,18 +270,11 @@ export class AssetMediaService extends BaseService {
       throw new BadRequestException('May not request original file');
     }
 
-    if (auth.sharedLink) {
-      dto.edited = true;
-    }
-
+    const edited = isEditedOnly(auth, dto.edited);
     const size = (dto.size ?? AssetMediaSize.THUMBNAIL) as unknown as AssetFileType;
-    const { originalPath, originalFileName, path } = await this.assetRepository.getForThumbnail(
-      id,
-      size,
-      dto.edited ?? false,
-    );
+    const { originalPath, originalFileName, path } = await this.assetRepository.getForThumbnail(id, size, edited);
 
-    if (size === AssetFileType.FullSize && mimeTypes.isWebSupportedImage(originalPath) && !dto.edited) {
+    if (size === AssetFileType.FullSize && mimeTypes.isWebSupportedImage(originalPath) && !edited) {
       // use original file for web supported images
       return { targetSize: 'original' };
     }
@@ -281,8 +289,7 @@ export class AssetMediaService extends BaseService {
       throw new NotFoundException('Asset media not found');
     }
 
-    const fileNameBase =
-      auth.sharedLink && !auth.sharedLink.showExif ? id : getFileNameWithoutExtension(originalFileName);
+    const fileNameBase = isMetadataHidden(auth) ? id : getFileNameWithoutExtension(originalFileName);
     const fileName = `${fileNameBase}_${size}${getFilenameExtension(path)}`;
 
     return new ImmichFileResponse({
@@ -342,9 +349,23 @@ export class AssetMediaService extends BaseService {
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {
-    await (sharedLink.albumId
-      ? this.albumRepository.addAssetIds(sharedLink.albumId, [assetId])
-      : this.sharedLinkRepository.addAssets(sharedLink.id, [assetId]));
+    if (!sharedLink.albumId) {
+      await this.sharedLinkRepository.addAssets(sharedLink.id, [assetId]);
+      return;
+    }
+
+    const album = await this.albumRepository.getById(sharedLink.albumId);
+    if (!album) {
+      return;
+    }
+
+    await this.albumRepository.addAssetIds(album.id, [assetId]);
+    const userIds = album.albumUsers.map(({ user }) => user.id);
+    await this.eventRepository.emit('AlbumUpdate', {
+      id: album.id,
+      userIds,
+      recipientIds: userIds,
+    });
   }
 
   private requireQuota(auth: AuthDto, size: number) {

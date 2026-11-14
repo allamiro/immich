@@ -5,23 +5,34 @@ import 'package:collection/collection.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:immich_mobile/constants/colors.dart';
+import 'package:immich_mobile/constants/constants.dart';
 import 'package:immich_mobile/constants/enums.dart';
+import 'package:immich_mobile/data/db/main/database.dart';
+import 'package:immich_mobile/data/db/main/table/app/settings.drift.dart';
+import 'package:immich_mobile/data/db/main/table/local/asset.drift.dart';
+import 'package:immich_mobile/data/db/main/table/local/trashed_asset.drift.dart';
 import 'package:immich_mobile/domain/models/config/app_config.dart';
 import 'package:immich_mobile/domain/models/log.model.dart';
 import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/models/timeline.model.dart';
+import 'package:immich_mobile/domain/services/feature_message.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
-import 'package:immich_mobile/infrastructure/entities/settings.entity.drift.dart';
-import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
+import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
+import 'package:immich_mobile/platform/native_sync_api.g.dart';
+import 'package:immich_mobile/platform/permission_api.g.dart';
 import 'package:immich_mobile/providers/album/album_sort_by_options.provider.dart';
+import 'package:immich_mobile/utils/datetime_helpers.dart';
+import 'package:logging/logging.dart';
 
-const int targetVersion = 26;
+const int targetVersion = 28;
 
-Future<void> migrateDatabaseIfNeeded(Drift drift) async {
-  final int version = Store.get(StoreKey.version, targetVersion);
+Future<void> migrateDatabaseIfNeeded(Drift drift, NativeSyncApi nativeSyncApi, PermissionApi permissionApi) async {
+  final int? storedVersion = Store.tryGet(StoreKey.version);
+  final version = storedVersion ?? targetVersion;
 
   if (version < 25) {
     await _migrateTo25();
@@ -31,8 +42,97 @@ Future<void> migrateDatabaseIfNeeded(Drift drift) async {
     await _migrateTo26(drift);
   }
 
+  if (version < 27) {
+    await _migrateTo27(drift, nativeSyncApi, permissionApi);
+  }
+
+  if (version < 28) {
+    await _migrateTo28(drift);
+  }
+
+  if (storedVersion == null) {
+    await FeatureMessageService(SettingsRepository.instance).markSeen();
+  }
+
   await Store.put(StoreKey.version, targetVersion);
   return;
+}
+
+// android photos without exif used to get the copy date as created_at,
+// mediastore still has the real one so read it once more and fix only the rows that differ
+Future<void> _migrateTo27(Drift drift, NativeSyncApi nativeSyncApi, PermissionApi permissionApi) async {
+  if (!CurrentPlatform.isAndroid) {
+    return;
+  }
+  try {
+    final dates = <String, DateTime>{};
+    void addDates(Iterable<PlatformAsset> assets) {
+      for (final asset in assets) {
+        final date = tryFromSecondsSinceEpoch(asset.createdAt, isUtc: true);
+        if (date != null) {
+          dates[asset.id] = date;
+        }
+      }
+    }
+
+    for (final album in await nativeSyncApi.getAlbums()) {
+      addDates(await nativeSyncApi.getAssetsForAlbum(album.id));
+    }
+    if (await permissionApi.hasManageMediaPermission()) {
+      final trashed = await nativeSyncApi.getTrashedAssets();
+      addDates(trashed.cast<String, List<Object?>>().values.flattened.cast<PlatformAsset>());
+    }
+
+    await drift.transaction(() async {
+      final localDates = {
+        for (final row in await (drift.selectOnly(
+          drift.localAssetEntity,
+        )..addColumns([drift.localAssetEntity.id, drift.localAssetEntity.createdAt])).get())
+          row.read(drift.localAssetEntity.id)!: row.read(drift.localAssetEntity.createdAt)!,
+      };
+      final trashedDates = {
+        for (final row in await (drift.selectOnly(
+          drift.trashedLocalAssetEntity,
+        )..addColumns([drift.trashedLocalAssetEntity.id, drift.trashedLocalAssetEntity.createdAt])).get())
+          row.read(drift.trashedLocalAssetEntity.id)!: row.read(drift.trashedLocalAssetEntity.createdAt)!,
+      };
+      for (final chunk in dates.entries.slices(kDriftMaxChunk)) {
+        await drift.batch((batch) {
+          for (final entry in chunk) {
+            final localDate = localDates[entry.key];
+            if (localDate != null && !localDate.isAtSameMomentAs(entry.value)) {
+              batch.update(
+                drift.localAssetEntity,
+                LocalAssetEntityCompanion(createdAt: Value(entry.value)),
+                where: (row) => row.id.equals(entry.key),
+              );
+            }
+            final trashedDate = trashedDates[entry.key];
+            if (trashedDate != null && !trashedDate.isAtSameMomentAs(entry.value)) {
+              batch.update(
+                drift.trashedLocalAssetEntity,
+                TrashedLocalAssetEntityCompanion(createdAt: Value(entry.value)),
+                where: (row) => row.id.equals(entry.key),
+              );
+            }
+          }
+        });
+      }
+    });
+  } catch (error, stackTrace) {
+    Logger('Migration').warning("Error migrating to version 27", error, stackTrace);
+  }
+}
+
+Future<void> _migrateTo28(Drift drift) => backfillAssetGroupDates(drift);
+
+Future<void> backfillAssetGroupDates(Drift drift) async {
+  await drift.customStatement(
+    "UPDATE remote_asset_entity SET group_date = COALESCE(STRFTIME('%Y-%m-%d', local_date_time), STRFTIME('%Y-%m-%d', created_at, 'localtime'))",
+  );
+  await drift.customStatement(
+    "UPDATE local_asset_entity SET group_date = STRFTIME('%Y-%m-%d', created_at, 'localtime')",
+  );
 }
 
 Future<void> _migrateTo25() async {
@@ -118,8 +218,10 @@ Future<void> _migrateTo26(Drift drift) async {
   await migrator.migrateBool(StoreKey.legacyTapToNavigate, SettingsKey.viewerTapToNavigate);
   // Network
   await migrator.migrateBool(StoreKey.legacyAutoEndpointSwitching, SettingsKey.networkAutoEndpointSwitching);
-  await migrator.migrateString(StoreKey.legacyPreferredWifiName, SettingsKey.networkPreferredWifiName);
-  await migrator.migrateString(StoreKey.legacyLocalEndpoint, SettingsKey.networkLocalEndpoint);
+  final preferredWifiName = await migrator.readLegacyStoreString(StoreKey.legacyPreferredWifiName.id);
+  migrator.stage(StoreKey.legacyPreferredWifiName, SettingsKey.networkPreferredWifiName, preferredWifiName);
+  final localEndpoint = await migrator.readLegacyStoreString(StoreKey.legacyLocalEndpoint.id);
+  migrator.stage(StoreKey.legacyLocalEndpoint, SettingsKey.networkLocalEndpoint, localEndpoint);
   await _migrateExternalEndpointList(migrator);
   await _migrateCustomHeaders(migrator);
   // Album
@@ -195,7 +297,7 @@ Future<void> _migrateCustomHeaders(_StoreMigrator migrator) async {
 
 class _StoreMigrator {
   final Drift _db;
-  final Map<SettingsKey<Object>, Object> _cache = {};
+  final Map<SettingsKey, Object?> _cache = {};
   final List<int> _migratedStoreIds = [];
 
   _StoreMigrator(this._db);
@@ -255,17 +357,7 @@ class _StoreMigrator {
     _migratedStoreIds.add(legacyKey.id);
   }
 
-  Future<void> migrateString(StoreKey<String> legacyKey, SettingsKey<String> newKey) async {
-    final value = await readLegacyStoreString(legacyKey.id);
-    if (value == null) {
-      return;
-    }
-
-    _cache[newKey] = value;
-    _migratedStoreIds.add(legacyKey.id);
-  }
-
-  void stage<T extends Object>(StoreKey legacyKey, SettingsKey<T> newKey, T value) {
+  void stage<T, U extends T>(StoreKey legacyKey, SettingsKey<T> newKey, U value) {
     _cache[newKey] = value;
     _migratedStoreIds.add(legacyKey.id);
   }
@@ -276,9 +368,15 @@ class _StoreMigrator {
         if (entry.value == defaultConfig.read(entry.key)) {
           continue;
         }
+
+        String? resolvedValue;
+        if (entry.value != null) {
+          resolvedValue = entry.key.encode(entry.value);
+        }
+
         batch.insert(
           _db.settingsEntity,
-          SettingsEntityCompanion(key: Value(entry.key.name), value: Value(entry.key.encode(entry.value))),
+          SettingsEntityCompanion(key: Value(entry.key.name), value: Value(resolvedValue)),
           mode: InsertMode.insertOrReplace,
         );
       }

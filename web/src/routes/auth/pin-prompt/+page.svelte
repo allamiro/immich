@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
-  import AuthPageLayout from '$lib/components/layouts/AuthPageLayout.svelte';
-  import PinCodeCreateForm from '$lib/components/user-settings-page/PinCodeCreateForm.svelte';
-  import { Route } from '$lib/route';
-  import { handleError } from '$lib/utils/handle-error';
+  import AuthPageLayout from '#lib/components/layouts/AuthPageLayout.svelte';
+  import PinCodeCreateForm from '#lib/components/user-settings-page/PinCodeCreateForm.svelte';
+  import { Route } from '#lib/route.ts';
+  import { handleError } from '#lib/utils/handle-error.ts';
   import { unlockAuthSession } from '@immich/sdk';
   import { Button, Icon, PinInput } from '@immich/ui';
   import { mdiLockOpenVariantOutline, mdiLockOutline, mdiLockSmart } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
+  import { goto } from '$app/navigation';
   import type { PageData } from './$types';
 
   interface Props {
@@ -30,7 +30,7 @@
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      await goto(Route.continue(data.continueUrl, Route.photos()));
+      await goto(data.continueUrl);
     } catch (error) {
       handleError(error, $t('wrong_pin_code'));
       isBadPinCode = true;

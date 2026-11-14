@@ -1,5 +1,5 @@
+import type { TimelineDate, TimelineDateTime, TimelineYearMonth } from '#lib/utils/timeline-util.ts';
 import type { AssetStackResponseDto, AssetVisibility } from '@immich/sdk';
-import type { TimelineDate, TimelineDateTime, TimelineYearMonth } from '$lib/utils/timeline-util';
 
 export type ViewportTopMonth = TimelineYearMonth | undefined | 'lead-in' | 'lead-out';
 
@@ -47,11 +47,6 @@ export interface Viewport {
   height: number;
 }
 
-export type ViewportXY = Viewport & {
-  x: number;
-  y: number;
-};
-
 export interface AddAsset {
   type: 'add';
   values: TimelineAsset[];
@@ -72,12 +67,7 @@ export interface TrashAssets {
   values: string[];
 }
 
-export interface UpdateStackAssets {
-  type: 'update_stack_assets';
-  values: string[];
-}
-
-export type PendingChange = AddAsset | UpdateAsset | DeleteAsset | TrashAssets | UpdateStackAssets;
+export type PendingChange = AddAsset | UpdateAsset | DeleteAsset | TrashAssets;
 
 export type ScrubberMonth = {
   height: number;
@@ -85,12 +75,6 @@ export type ScrubberMonth = {
   year: number;
   month: number;
   title: string;
-};
-
-export type TimelineManagerLayoutOptions = {
-  rowHeight?: number;
-  headerHeight?: number;
-  gap?: number;
 };
 
 export interface UpdateGeometryOptions {

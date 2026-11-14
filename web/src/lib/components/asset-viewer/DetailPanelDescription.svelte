@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { shortcut } from '$lib/actions/shortcut';
-  import { handleError } from '$lib/utils/handle-error';
+  import { handleError } from '#lib/utils/handle-error.ts';
   import { updateAsset, type AssetResponseDto } from '@immich/sdk';
-  import { Textarea, toastManager } from '@immich/ui';
+  import { Textarea, shortcut, toastManager } from '@immich/ui';
   import { t } from 'svelte-i18n';
-  import { fromAction } from 'svelte/attachments';
 
   interface Props {
     asset: AssetResponseDto;
@@ -33,17 +31,17 @@
   <section class="mt-10 px-4">
     <Textarea
       bind:value={description}
-      class="max-h-40 resize-none border-b border-gray-500 bg-transparent pl-0 ring-0 outline-none focus:border-b-2 focus:border-immich-primary focus:ring-0 dark:bg-transparent dark:focus:border-immich-dark-primary"
+      class="max-h-40 resize-none border-b border-gray-500 bg-transparent ps-0 ring-0 outline-none focus:border-b-2 focus:border-immich-primary focus:ring-0 dark:bg-transparent dark:focus:border-immich-dark-primary"
       rows={1}
       grow
       shape="rectangle"
       onfocusout={handleFocusOut}
       placeholder={$t('add_a_description')}
       data-testid="autogrow-textarea"
-      {@attach fromAction(shortcut, () => ({
+      {@attach shortcut({
         shortcut: { key: 'Enter', ctrl: true },
         onShortcut: (e) => e.currentTarget.blur(),
-      }))}
+      })}
     />
   </section>
 {:else if description}

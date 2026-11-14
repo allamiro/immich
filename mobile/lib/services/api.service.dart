@@ -5,8 +5,8 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
-import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
 import 'package:immich_mobile/utils/url_helper.dart';
 import 'package:logging/logging.dart';
@@ -22,29 +22,31 @@ class ApiService {
   late AssetsApi assetsApi;
   late SearchApi searchApi;
   late ServerApi serverInfoApi;
+  // ignore: unused-code
   late MapApi mapApi;
   late PartnersApi partnersApi;
   late PeopleApi peopleApi;
   late SharedLinksApi sharedLinksApi;
   late SyncApi syncApi;
+  // ignore: unused-code
   late SystemConfigApi systemConfigApi;
   late ActivitiesApi activitiesApi;
+  // ignore: unused-code
   late DownloadApi downloadApi;
   late TrashApi trashApi;
   late StacksApi stacksApi;
   late ViewsApi viewApi;
+  // ignore: unused-code
   late MemoriesApi memoriesApi;
   late SessionsApi sessionsApi;
   late TagsApi tagsApi;
+  late PasskeysApi passkeysApi;
+  late ConfigPublicApi configPublicApi;
 
   ApiService() {
     // The below line ensures that the api clients are initialized when the service is instantiated
     // This is required to avoid late initialization errors when the clients are access before the endpoint is resolved
     setEndpoint('');
-    final endpoint = Store.tryGet(StoreKey.serverEndpoint);
-    if (endpoint != null && endpoint.isNotEmpty) {
-      setEndpoint(endpoint);
-    }
   }
   final _log = Logger("ApiService");
 
@@ -53,7 +55,7 @@ class ApiService {
     _apiClient.client = NetworkRepository.client;
   }
 
-  setEndpoint(String endpoint) {
+  void setEndpoint(String endpoint) {
     _apiClient.basePath = endpoint;
     _apiClient.client = NetworkRepository.client;
     usersApi = UsersApi(_apiClient);
@@ -77,6 +79,8 @@ class ApiService {
     memoriesApi = MemoriesApi(_apiClient);
     sessionsApi = SessionsApi(_apiClient);
     tagsApi = TagsApi(_apiClient);
+    passkeysApi = PasskeysApi(_apiClient);
+    configPublicApi = ConfigPublicApi(_apiClient);
   }
 
   Future<String> resolveAndSetEndpoint(String serverUrl) async {
@@ -96,12 +100,12 @@ class ApiService {
   ///  port   - optional (default: based on schema)
   ///  path   - optional
   Future<String> resolveEndpoint(String serverUrl) async {
-    String url = sanitizeUrl(serverUrl);
+    String url = normalizeServerUrl(serverUrl);
 
     // Check for /.well-known/immich
     final wellKnownEndpoint = await _getWellKnownEndpoint(url);
     if (wellKnownEndpoint.isNotEmpty) {
-      url = sanitizeUrl(wellKnownEndpoint);
+      url = normalizeServerUrl(wellKnownEndpoint);
     }
 
     if (!await _isEndpointAvailable(url)) {
@@ -113,13 +117,13 @@ class ApiService {
   }
 
   Future<bool> _isEndpointAvailable(String serverUrl) async {
-    if (!serverUrl.endsWith('/api')) {
-      serverUrl += '/api';
-    }
+    final endpoint = serverUrl.endsWith('/api') ? serverUrl : '$serverUrl/api';
+
+    // Probe with a throwaway client so the shared client keeps pointing at the active endpoint
+    final probeClient = ApiClient(basePath: endpoint)..client = NetworkRepository.client;
 
     try {
-      await setEndpoint(serverUrl);
-      await serverInfoApi.pingServer().timeout(const Duration(seconds: 5));
+      await ServerApi(probeClient).pingServer().timeout(const Duration(seconds: 5));
     } on TimeoutException catch (_) {
       return false;
     } on SocketException catch (_) {
@@ -155,7 +159,7 @@ class ApiService {
   }
 
   Future<void> setDeviceInfoHeader() async {
-    DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
+    final DeviceInfoPlugin deviceInfoPlugin = DeviceInfoPlugin();
 
     if (Platform.isIOS) {
       final iosInfo = await deviceInfoPlugin.iosInfo;
@@ -179,7 +183,7 @@ class ApiService {
     }
     final network = SettingsRepository.instance.appConfig.network;
     final localEndpoint = network.localEndpoint;
-    if (localEndpoint.isNotEmpty) {
+    if (localEndpoint != null && localEndpoint.isNotEmpty) {
       urls.add(localEndpoint);
     }
     for (final url in network.externalEndpointList) {

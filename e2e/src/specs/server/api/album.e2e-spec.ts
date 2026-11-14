@@ -11,9 +11,9 @@ import {
   Permission,
   SharedLinkType,
 } from '@immich/sdk';
-import { createUserDto } from 'src/fixtures';
-import { errorDto } from 'src/responses';
-import { app, asBearerAuth, utils } from 'src/utils';
+import { createUserDto } from 'src/fixtures.js';
+import { errorDto } from 'src/responses.js';
+import { app, asBearerAuth, utils } from 'src/utils.js';
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -127,6 +127,7 @@ describe('/albums', () => {
       }),
     ]);
 
+    // eslint-disable-next-line unicorn/no-unreadable-array-destructuring
     [user2Albums[0]] = await Promise.all([
       getAlbumInfo({ id: user2Albums[0].id }, { headers: asBearerAuth(user2.accessToken) }),
       deleteUserAdmin({ id: user3.userId, userAdminDeleteDto: {} }, { headers: asBearerAuth(admin.accessToken) }),
@@ -511,13 +512,14 @@ describe('/albums', () => {
       });
     });
 
-    it('should not be able to share album with owner', async () => {
+    it('should deduplicate owner from albumUsers on create', async () => {
       const { status, body } = await request(app)
         .post('/albums')
         .send({ albumName: 'New album', albumUsers: [{ role: AlbumUserRole.Editor, userId: user1.userId }] })
         .set('Authorization', `Bearer ${user1.accessToken}`);
-      expect(status).toBe(400);
-      expect(body).toEqual(errorDto.badRequest('Cannot share album with owner'));
+      expect(status).toBe(201);
+      expect(body.albumUsers).toHaveLength(1);
+      expect(body.albumUsers[0]).toMatchObject({ role: AlbumUserRole.Owner, user: { id: user1.userId } });
     });
   });
 
@@ -618,16 +620,6 @@ describe('/albums', () => {
   });
 
   describe('DELETE /albums/:id/assets', () => {
-    it('should require authorization', async () => {
-      const { status, body } = await request(app)
-        .delete(`/albums/${user1Albums[1].id}/assets`)
-        .set('Authorization', `Bearer ${user2.accessToken}`)
-        .send({ ids: [user1Asset1.id] });
-
-      expect(status).toBe(400);
-      expect(body).toEqual(errorDto.noPermission);
-    });
-
     it('should be able to remove foreign asset from owned album', async () => {
       const { status, body } = await request(app)
         .delete(`/albums/${user2Albums[0].id}/assets`)
@@ -643,25 +635,19 @@ describe('/albums', () => {
       ]);
     });
 
-    it('should not be able to remove foreign asset from foreign album', async () => {
+    it('should be able to remove foreign asset from shared album as an editor', async () => {
       const { status, body } = await request(app)
         .delete(`/albums/${user1Albums[0].id}/assets`)
         .set('Authorization', `Bearer ${user2.accessToken}`)
         .send({ ids: [user1Asset1.id] });
 
       expect(status).toBe(200);
-      expect(body).toEqual([
-        expect.objectContaining({
-          id: user1Asset1.id,
-          success: false,
-          error: 'no_permission',
-        }),
-      ]);
+      expect(body).toEqual([expect.objectContaining({ id: user1Asset1.id, success: true })]);
     });
 
     it('should be able to remove own asset from own album', async () => {
       const { status, body } = await request(app)
-        .delete(`/albums/${user1Albums[0].id}/assets`)
+        .delete(`/albums/${user1Albums[2].id}/assets`)
         .set('Authorization', `Bearer ${user1.accessToken}`)
         .send({ ids: [user1Asset1.id] });
 
@@ -711,12 +697,11 @@ describe('/albums', () => {
         utils.createAlbum(user1.accessToken, { albumName: 'target' }),
       ]);
 
-      const { status, body } = await request(app)
+      const { status } = await request(app)
         .put(`/albums/${source.id}/assets/move`)
         .send({ targetAlbumId: target.id, assetIds: [asset.id] });
 
       expect(status).toBe(401);
-      expect(body).toEqual(errorDto.unauthorized);
       expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([source.id]));
     });
 
@@ -831,7 +816,7 @@ describe('/albums', () => {
       expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([target.id]));
     });
 
-    it('should not move a foreign asset without permission', async () => {
+    it('should move a foreign asset that is shared through the source album', async () => {
       const asset = await utils.createAsset(user2.accessToken);
       const [source, target] = await Promise.all([
         utils.createAlbum(user1.accessToken, {
@@ -851,8 +836,8 @@ describe('/albums', () => {
         .send({ targetAlbumId: target.id, assetIds: [asset.id] });
 
       expect(status).toBe(200);
-      expect(body).toEqual([expect.objectContaining({ id: asset.id, success: false, error: 'no_permission' })]);
-      expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([source.id]));
+      expect(body).toEqual([expect.objectContaining({ id: asset.id, success: true })]);
+      expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([target.id]));
     });
 
     it('should move a foreign asset out of an owned album when it is already in the target', async () => {
@@ -984,7 +969,7 @@ describe('/albums', () => {
         .send({ targetAlbumId: target.id, assetIds: [asset.id] });
 
       expect(status).toBe(403);
-      expect(body).toEqual(errorDto.missingPermission('albumAsset.create'));
+      expect(body).toEqual(expect.objectContaining({ message: 'Missing required permission: albumAsset.create' }));
       expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([source.id]));
     });
 
@@ -1040,8 +1025,8 @@ describe('/albums', () => {
         .set('Authorization', `Bearer ${user1.accessToken}`)
         .send({ albumUsers: [{ userId: user1.userId, role: AlbumUserRole.Editor }] });
 
-      expect(status).toBe(400);
-      expect(body).toEqual(errorDto.badRequest('User already added'));
+      expect(status).toBe(200);
+      expect(body.albumUsers.length).toEqual(1);
     });
 
     it('should not be able to add existing user to shared album', async () => {
@@ -1055,8 +1040,8 @@ describe('/albums', () => {
         .set('Authorization', `Bearer ${user1.accessToken}`)
         .send({ albumUsers: [{ userId: user2.userId, role: AlbumUserRole.Editor }] });
 
-      expect(status).toBe(400);
-      expect(body).toEqual(errorDto.badRequest('User already added'));
+      expect(status).toBe(200);
+      expect(body.albumUsers.length).toEqual(2);
     });
   });
 
@@ -1105,6 +1090,23 @@ describe('/albums', () => {
 
       expect(status).toBe(400);
       expect(body).toEqual(errorDto.badRequest('Not found or no album.share access'));
+    });
+
+    it('should not allow an editor to change the role of an owner', async () => {
+      const album = await utils.createAlbum(user1.accessToken, {
+        albumName: 'testAlbum',
+        albumUsers: [{ userId: user2.userId, role: AlbumUserRole.Editor }],
+      });
+
+      expect(album.albumUsers[1].role).toEqual(AlbumUserRole.Editor);
+
+      const { status, body } = await request(app)
+        .put(`/albums/${album.id}/user/${user1.userId}`)
+        .set('Authorization', `Bearer ${user2.accessToken}`)
+        .send({ role: AlbumUserRole.Editor });
+
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('User is owner'));
     });
   });
 });

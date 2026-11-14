@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { mediaQueryManager } from '$lib/stores/media-query-manager.svelte';
-  import type { OcrBox } from '$lib/utils/ocr-utils';
-  import { calculateBoundingBoxMatrix, calculateFittedFontSize } from '$lib/utils/ocr-utils';
+  import { mediaQueryManager } from '#lib/stores/media-query-manager.svelte.ts';
+  import { calculateBoundingBoxMatrix, calculateFittedFontSize, type OcrBox } from '#lib/utils/ocr-utils.ts';
 
   type Props = {
     ocrBox: OcrBox;
@@ -20,6 +19,7 @@
   const handleSelectStart = (event: Event) => {
     const target = event.currentTarget as HTMLElement;
     requestAnimationFrame(() => {
+      // eslint-disable-next-line unicorn/no-unnecessary-global-this
       const selection = globalThis.getSelection();
       if (selection) {
         selection.selectAllChildren(target);

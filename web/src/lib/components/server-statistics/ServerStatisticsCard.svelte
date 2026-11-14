@@ -1,52 +1,50 @@
 <script lang="ts">
-  import { ByteUnit } from '$lib/utils/byte-units';
+  import { ByteUnit } from '#lib/utils/byte-units.ts';
   import { Icon, Text } from '@immich/ui';
-
-  type ValueData = {
-    value: number;
-    unit?: ByteUnit | undefined;
-  };
+  import type { Snippet } from 'svelte';
 
   interface Props {
-    icon: string;
+    icon?: string;
     title: string;
-    valuePromise: Promise<ValueData>;
+    value?: number;
+    unit?: ByteUnit;
+    tooltip?: string;
+    footer?: Snippet;
   }
 
-  let { icon, title, valuePromise }: Props = $props();
-  const zeros = (data?: ValueData) => {
-    let length = 13;
-    if (data) {
-      const valueLength = data.value.toString().length;
-      length = length - valueLength;
-    }
-
-    return '0'.repeat(length);
-  };
+  let { icon, title, value, unit, tooltip, footer }: Props = $props();
+  const zeros = (value?: number) => '0'.repeat(13 - (value?.toString().length ?? 0));
 </script>
 
-<div class="flex h-35 w-full flex-col justify-between rounded-3xl bg-subtle p-5 text-primary">
+<div
+  class="flex h-35 w-full flex-col justify-between rounded-3xl bg-subtle p-5 text-primary"
+  data-testid="statistic-card"
+>
   <div class="flex place-items-center gap-4">
-    <Icon {icon} size="40" />
-    <Text size="giant" fontWeight="medium">{title}</Text>
+    {#if icon}
+      <Icon {icon} size="40" />
+    {/if}
+    <Text size="giant" fontWeight="medium" title={tooltip}>{title}</Text>
   </div>
 
-  {#await valuePromise}
-    <div class="relative mx-auto font-mono text-2xl font-medium">
-      <span class="shimmer-text text-gray-300 dark:text-gray-600">{zeros()}</span>
-    </div>
-  {:then data}
-    <div class="relative mx-auto font-mono text-2xl font-medium">
-      <span class="text-gray-300 dark:text-gray-600">{zeros(data)}</span><span>{data.value}</span>
-      {#if data.unit}
-        <code class="font-mono text-base font-normal">{data.unit}</code>
+  {#if value !== undefined}
+    <div
+      class="relative mx-auto font-mono text-2xl font-medium"
+      aria-label="{value} {unit ?? ''}"
+      data-testid="statistic-value"
+    >
+      <span class="text-gray-300 dark:text-gray-600">{zeros(value)}</span><span>{value}</span>
+      {#if unit}
+        <code class="font-mono text-base font-normal">{unit}</code>
       {/if}
     </div>
-  {:catch _}
-    <div class="relative mx-auto font-mono text-2xl font-medium">
-      <span class="text-gray-300 dark:text-gray-600">{zeros()}</span>
+  {:else}
+    <div class="relative mx-auto font-mono text-2xl font-medium" aria-label="0">
+      <span class="shimmer-text text-gray-300 dark:text-gray-600">{zeros()}</span>
     </div>
-  {/await}
+  {/if}
+
+  {@render footer?.()}
 </div>
 
 <style>

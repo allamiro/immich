@@ -1,5 +1,5 @@
-import { createZodDto } from 'nestjs-zod';
 import z from 'zod';
+import { createZodDto } from 'src/zod.js';
 
 export enum AssetEditAction {
   Crop = 'crop',
@@ -31,7 +31,9 @@ const CropParametersSchema = z
 const RotateParametersSchema = z
   .object({
     angle: z
-      .number()
+      .int()
+      .min(0)
+      .max(270)
       .refine((v) => [0, 90, 180, 270].includes(v), {
         error: 'Angle must be one of the following values: 0, 90, 180, 270',
       })
@@ -73,7 +75,7 @@ function getExpectedKeysByActionMessage(): string {
 }
 
 function isParametersValidForAction(edit: z.infer<typeof AssetEditActionItemSchema>): boolean {
-  return actionParameterMap[edit.action].safeParse(edit.parameters).success;
+  return actionParameterMap[edit.action].validate(edit.parameters);
 }
 
 const AssetEditActionItemSchema = z

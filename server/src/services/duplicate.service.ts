@@ -1,16 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
-import { OnJob } from 'src/decorators';
-import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
-import { MapAsset, mapAsset } from 'src/dtos/asset-response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { DuplicateResolveDto, DuplicateResolveGroupDto, DuplicateResponseDto } from 'src/dtos/duplicate.dto';
-import { AssetStatus, AssetVisibility, JobName, JobStatus, Permission, QueueName } from 'src/enum';
-import { AssetDuplicateResult } from 'src/repositories/search.repository';
-import { BaseService } from 'src/services/base.service';
-import { JobItem, JobOf } from 'src/types';
-import { suggestDuplicateKeepAssetIds } from 'src/utils/duplicate';
-import { isDuplicateDetectionEnabled } from 'src/utils/misc';
+import { OnJob } from 'src/decorators.js';
+import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
+import { MapAsset, mapAsset } from 'src/dtos/asset-response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { DuplicateResolveDto, DuplicateResolveGroupDto, DuplicateResponseDto } from 'src/dtos/duplicate.dto.js';
+import { AssetStatus, AssetVisibility, DatabaseLock, JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
+import { AssetDuplicateResult } from 'src/repositories/search.repository.js';
+import { BaseService } from 'src/services/base.service.js';
+import type { JobOf } from 'src/types.js';
+import { suggestDuplicateKeepAssetIds } from 'src/utils/duplicate.js';
+import { batched, isDuplicateDetectionEnabled } from 'src/utils/misc.js';
 
 type ResolveRequest = {
   assetUpdate: {
@@ -113,7 +112,7 @@ export class DuplicateService extends BaseService {
   private async resolveGroup(auth: AuthDto, group: DuplicateResolveGroupDto): Promise<BulkIdResponseDto> {
     const { duplicateId, keepAssetIds, trashAssetIds } = group;
 
-    const duplicateGroup = await this.duplicateRepository.get(duplicateId);
+    const duplicateGroup = await this.duplicateRepository.get(auth.user.id, duplicateId);
     if (!duplicateGroup) {
       return { id: duplicateId, success: false, error: BulkIdErrorReason.NOT_FOUND };
     }
@@ -156,51 +155,51 @@ export class DuplicateService extends BaseService {
       }
     }
 
-    const assetAlbumMap = await this.albumRepository.getByAssetIds(auth.user.id, [...groupAssetIds]);
+    // Only merge metadata into the keeper when exactly one asset can absorb trashed duplicates.
+    if (idsToKeep.length === 1 && idsToTrash.length > 0) {
+      const assetAlbumMap = await this.albumRepository.getByAssetIds(auth.user.id, [...groupAssetIds]);
 
-    const { assetUpdate, exifUpdate, mergedAlbumIds, mergedTagIds, mergedTagValues } = this.getSyncMergeResult(
-      duplicateGroup.assets,
-      assetAlbumMap,
-    );
+      const { assetUpdate, exifUpdate, mergedAlbumIds, mergedTagIds, mergedTagValues } = this.getSyncMergeResult(
+        duplicateGroup.assets,
+        assetAlbumMap,
+      );
 
-    if (mergedAlbumIds.length > 0) {
-      const allowedAlbumIds = await this.checkAccess({
-        auth,
-        permission: Permission.AlbumAssetCreate,
-        ids: mergedAlbumIds,
-      });
+      if (mergedAlbumIds.length > 0) {
+        const allowedAlbumIds = await this.checkAccess({
+          auth,
+          permission: Permission.AlbumAssetCreate,
+          ids: mergedAlbumIds,
+        });
 
-      const allowedShareIds = await this.checkAccess({
-        auth,
-        permission: Permission.AssetShare,
-        ids: idsToKeep,
-      });
+        const allowedShareIds = await this.checkAccess({
+          auth,
+          permission: Permission.AssetShare,
+          ids: idsToKeep,
+        });
 
-      if (allowedAlbumIds.size > 0 && allowedShareIds.size > 0) {
-        await this.albumRepository.addAssetIdsToAlbums(
-          [...allowedAlbumIds].flatMap((albumId) => [...allowedShareIds].map((assetId) => ({ albumId, assetId }))),
-        );
+        if (allowedAlbumIds.size > 0 && allowedShareIds.size > 0) {
+          await this.albumRepository.addAssetIdsToAlbums(
+            [...allowedAlbumIds].flatMap((albumId) => [...allowedShareIds].map((assetId) => ({ albumId, assetId }))),
+          );
+        }
       }
-    }
 
-    if (mergedTagIds.length > 0) {
-      const allowedTagIds = await this.checkAccess({
-        auth,
-        permission: Permission.TagAsset,
-        ids: mergedTagIds,
-      });
+      if (mergedTagIds.length > 0) {
+        const allowedTagIds = await this.checkAccess({
+          auth,
+          permission: Permission.TagAsset,
+          ids: mergedTagIds,
+        });
 
-      if (allowedTagIds.size > 0) {
-        // Replace tags for each keeper asset to ensure all merged tags are applied
-        await Promise.all(idsToKeep.map((assetId) => this.tagRepository.replaceAssetTags(assetId, [...allowedTagIds])));
+        if (allowedTagIds.size > 0) {
+          await Promise.all(
+            idsToKeep.map((assetId) => this.tagRepository.replaceAssetTags(assetId, [...allowedTagIds])),
+          );
 
-        // Update asset_exif.tags so the subsequent SidecarWrite + MetadataExtraction
-        // cycle preserves the merged tags (updateAllExif locks the property automatically)
-        await this.assetRepository.updateAllExif(idsToKeep, { tags: mergedTagValues });
+          await this.assetRepository.updateAllExif(idsToKeep, { tags: mergedTagValues });
+        }
       }
-    }
 
-    if (idsToKeep.length > 0) {
       const hasExifUpdate = Object.keys(exifUpdate).length > 0;
       const hasTagUpdate = mergedTagIds.length > 0;
 
@@ -213,20 +212,22 @@ export class DuplicateService extends BaseService {
       }
 
       await this.assetRepository.updateAll(idsToKeep, { duplicateId: null, ...assetUpdate });
+    } else if (idsToKeep.length > 0) {
+      await this.assetRepository.updateAll(idsToKeep, { duplicateId: null });
     }
 
     if (idsToTrash.length > 0) {
       // TODO: this is duplicated with AssetService.deleteAssets
       const { trash } = await this.getConfig({ withCache: true });
-      const force = !trash.enabled;
+      const isForce = !trash.enabled;
 
       await this.assetRepository.updateAll(idsToTrash, {
         deletedAt: new Date(),
-        status: force ? AssetStatus.Deleted : AssetStatus.Trashed,
+        status: isForce ? AssetStatus.Deleted : AssetStatus.Trashed,
         duplicateId: null,
       });
 
-      await this.eventRepository.emit(force ? 'AssetDeleteAll' : 'AssetTrashAll', {
+      await this.eventRepository.emit(isForce ? 'AssetDeleteAll' : 'AssetTrashAll', {
         assetIds: idsToTrash,
         userId: auth.user.id,
       });
@@ -305,81 +306,73 @@ export class DuplicateService extends BaseService {
       return JobStatus.Skipped;
     }
 
-    let jobs: JobItem[] = [];
-    const queueAll = async () => {
-      await this.jobRepository.queueAll(jobs);
-      jobs = [];
-    };
-
-    const assets = this.assetJobRepository.streamForSearchDuplicates(force);
-    for await (const asset of assets) {
-      jobs.push({ name: JobName.AssetDetectDuplicates, data: { id: asset.id } });
-      if (jobs.length >= JOBS_ASSET_PAGINATION_SIZE) {
-        await queueAll();
-      }
+    for await (const assets of batched(this.assetJobRepository.streamForSearchDuplicates(force))) {
+      await this.jobRepository.queueAll(
+        assets.map((asset) => ({ name: JobName.AssetDetectDuplicates, data: { id: asset.id } })),
+      );
     }
-
-    await queueAll();
 
     return JobStatus.Success;
   }
 
   @OnJob({ name: JobName.AssetDetectDuplicates, queue: QueueName.DuplicateDetection })
   async handleSearchDuplicates({ id }: JobOf<JobName.AssetDetectDuplicates>): Promise<JobStatus> {
-    const { machineLearning } = await this.getConfig({ withCache: true });
-    if (!isDuplicateDetectionEnabled(machineLearning)) {
-      return JobStatus.Skipped;
-    }
+    return this.databaseRepository.withLock(DatabaseLock.DuplicateDetection, async () => {
+      const { machineLearning } = await this.getConfig({ withCache: true });
+      if (!isDuplicateDetectionEnabled(machineLearning)) {
+        return JobStatus.Skipped;
+      }
 
-    const asset = await this.assetJobRepository.getForSearchDuplicatesJob(id);
-    if (!asset) {
-      this.logger.error(`Asset ${id} not found`);
-      return JobStatus.Failed;
-    }
+      const asset = await this.assetJobRepository.getForSearchDuplicatesJob(id);
+      if (!asset) {
+        this.logger.error(`Asset ${id} not found`);
+        return JobStatus.Failed;
+      }
 
-    if (asset.stackId) {
-      this.logger.debug(`Asset ${id} is part of a stack, skipping`);
-      return JobStatus.Skipped;
-    }
+      if (asset.stackId) {
+        this.logger.debug(`Asset ${id} is part of a stack, skipping`);
+        return JobStatus.Skipped;
+      }
 
-    if (asset.visibility === AssetVisibility.Hidden) {
-      this.logger.debug(`Asset ${id} is not visible, skipping`);
-      return JobStatus.Skipped;
-    }
+      if (asset.visibility === AssetVisibility.Hidden) {
+        this.logger.debug(`Asset ${id} is not visible, skipping`);
+        return JobStatus.Skipped;
+      }
 
-    if (asset.visibility === AssetVisibility.Locked) {
-      this.logger.debug(`Asset ${id} is locked, skipping`);
-      return JobStatus.Skipped;
-    }
+      if (asset.visibility === AssetVisibility.Locked) {
+        this.logger.debug(`Asset ${id} is locked, skipping`);
+        return JobStatus.Skipped;
+      }
 
-    if (!asset.embedding) {
-      this.logger.debug(`Asset ${id} is missing embedding`);
-      return JobStatus.Failed;
-    }
+      if (!asset.embedding) {
+        this.logger.debug(`Asset ${id} is missing embedding`);
+        return JobStatus.Failed;
+      }
 
-    const duplicateAssets = await this.duplicateRepository.search({
-      assetId: asset.id,
-      embedding: asset.embedding,
-      maxDistance: machineLearning.duplicateDetection.maxDistance,
-      type: asset.type,
-      userIds: [asset.ownerId],
+      const duplicateAssets = await this.duplicateRepository.search({
+        assetId: asset.id,
+        embedding: asset.embedding,
+        maxDistance: machineLearning.duplicateDetection.maxDistance,
+        type: asset.type,
+        userIds: [asset.ownerId],
+      });
+
+      let assetIds = [asset.id];
+      if (duplicateAssets.length > 0) {
+        this.logger.debug(
+          `Found ${duplicateAssets.length} duplicate${duplicateAssets.length === 1 ? '' : 's'} for asset ${asset.id}`,
+        );
+        assetIds = await this.updateDuplicates(asset, duplicateAssets);
+      } else if (asset.duplicateId) {
+        this.logger.debug(`No duplicates found for asset ${asset.id}, removing duplicateId`);
+        await this.assetRepository.update({ id: asset.id, duplicateId: null });
+      }
+
+      const duplicatesDetectedAt = new Date();
+      await this.assetRepository.upsertJobStatus(...assetIds.map((assetId) => ({ assetId, duplicatesDetectedAt })));
+
+      return JobStatus.Success;
     });
-
-    let assetIds = [asset.id];
-    if (duplicateAssets.length > 0) {
-      this.logger.debug(
-        `Found ${duplicateAssets.length} duplicate${duplicateAssets.length === 1 ? '' : 's'} for asset ${asset.id}`,
-      );
-      assetIds = await this.updateDuplicates(asset, duplicateAssets);
-    } else if (asset.duplicateId) {
-      this.logger.debug(`No duplicates found for asset ${asset.id}, removing duplicateId`);
-      await this.assetRepository.update({ id: asset.id, duplicateId: null });
-    }
-
-    const duplicatesDetectedAt = new Date();
-    await this.assetRepository.upsertJobStatus(...assetIds.map((assetId) => ({ assetId, duplicatesDetectedAt })));
-
-    return JobStatus.Success;
   }
 
   private async updateDuplicates(

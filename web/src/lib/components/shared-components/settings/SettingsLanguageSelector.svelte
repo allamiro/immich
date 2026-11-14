@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { invalidateAll } from '$app/navigation';
-  import Combobox from '$lib/components/shared-components/Combobox.svelte';
-  import { defaultLang } from '$lib/constants';
-  import { lang } from '$lib/stores/preferences.store';
-  import { getClosestAvailableLocale, langCodes, langs } from '$lib/utils/i18n';
+  import Combobox from '#lib/components/shared-components/Combobox.svelte';
+  import { defaultLang } from '#lib/constants.ts';
+  import { lang } from '#lib/stores/preferences.store.ts';
+  import { convertBCP47, getClosestAvailableLocale, langCodes, langs } from '#lib/utils/i18n.ts';
   import { Label, Text } from '@immich/ui';
   import { locale as i18nLocale, t } from 'svelte-i18n';
+  import { refreshAll } from '$app/navigation';
 
   interface Props {
     showSettingDescription?: boolean;
@@ -13,16 +13,18 @@
 
   let { showSettingDescription = false }: Props = $props();
 
-  const langOptions = langs.map((lang) => ({ label: lang.name, value: lang.code }));
+  const langOptions = langs.map((lang) => ({ label: lang.name, value: convertBCP47(lang.code) }));
 
   const defaultLangOption = { label: defaultLang.name, value: defaultLang.code };
 
   const handleLanguageChange = async (newLang: string | undefined) => {
-    if (newLang) {
-      $lang = newLang;
-      await i18nLocale.set(newLang);
-      await invalidateAll();
+    if (!newLang) {
+      return;
     }
+
+    $lang = newLang;
+    await i18nLocale.set(convertBCP47(newLang));
+    await refreshAll();
   };
 
   let closestLanguage = $derived(getClosestAvailableLocale([$lang], langCodes));

@@ -1,13 +1,15 @@
 <script lang="ts">
-  import FaceEditor from '$lib/components/asset-viewer/face-editor/FaceEditor.svelte';
-  import VideoRemoteViewer from '$lib/components/asset-viewer/VideoRemoteViewer.svelte';
-  import { assetViewerFadeDuration } from '$lib/constants';
-  import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { castManager } from '$lib/managers/cast-manager.svelte';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import { mediaCapabilitiesManager } from '$lib/managers/media-capabilities-manager.svelte';
-  import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '$lib/stores/preferences.store';
-  import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
+  import VideoRemoteViewer from '#lib/components/asset-viewer/VideoRemoteViewer.svelte';
+  import FaceEditor from '#lib/components/asset-viewer/face-editor/FaceEditor.svelte';
+  import { assetViewerFadeDuration } from '#lib/constants.ts';
+  import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import { castManager } from '#lib/managers/cast-manager.svelte.ts';
+  import { mediaCapabilitiesManager } from '#lib/managers/media-capabilities-manager.svelte.ts';
+  import { createPreloadedQuery } from '#lib/queries/client.ts';
+  import { getPublicConfigQuery } from '#lib/queries/config-public.query.ts';
+  import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '#lib/stores/preferences.store.ts';
+  import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '#lib/utils.ts';
   import { AssetMediaSize, type AssetResponseDto } from '@immich/sdk';
   import { Icon, LoadingSpinner, shortcuts } from '@immich/ui';
   import {
@@ -45,6 +47,9 @@
   import { fade } from 'svelte/transition';
   import './immich-time-range';
 
+  const query = createPreloadedQuery(getPublicConfigQuery);
+  const publicConfig = $derived(query.data);
+
   interface Props {
     asset: AssetResponseDto;
     assetId: string;
@@ -75,8 +80,9 @@
 
   let videoPlayer: HTMLVideoElement | undefined = $state();
   let isLoading = $state(true);
+  let hasLoadedMetadata = $state(false);
   let assetFileUrl = $derived.by(() => {
-    if (featureFlagsManager.value.realtimeTranscoding) {
+    if (publicConfig.ffmpeg.realtime.enabled) {
       return getAssetHlsUrl(assetId);
     }
 
@@ -150,6 +156,15 @@
       },
     },
     useMediaCapabilities: false,
+    xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+      const authenticatedUrl = new URL(url, location.origin);
+      for (const [key, value] of Object.entries(authManager.params)) {
+        if (value) {
+          authenticatedUrl.searchParams.set(key, value as string);
+        }
+      }
+      xhr.open('GET', authenticatedUrl.href);
+    },
   };
 
   const releaseSession = () => {
@@ -231,6 +246,7 @@
 
   $effect(() => {
     // reactive on `assetFileUrl` changes
+    hasLoadedMetadata = false;
     if (videoPlayer && assetFileUrl) {
       hasFocused = false;
       rebuildCount = 0;
@@ -298,8 +314,7 @@
   const onSwipe = (event: SwipeCustomEvent) => {
     if (event.detail.direction === 'left') {
       onNextAsset();
-    }
-    if (event.detail.direction === 'right') {
+    } else if (event.detail.direction === 'right') {
       onPreviousAsset();
     }
   };
@@ -319,12 +334,24 @@
 </script>
 
 <svelte:body
-  use:shortcuts={[
+  {@attach shortcuts([
     {
       shortcut: { key: ' ' },
       onShortcut: () => (videoPlayer?.paused ? videoPlayer?.play() : videoPlayer?.pause()),
     },
-  ]}
+    {
+      shortcut: { shift: true, key: 'ArrowLeft' },
+      onShortcut: () =>
+        videoPlayer ? (videoPlayer.currentTime = Math.max(videoPlayer.currentTime - 0.4, 0)) : undefined,
+    },
+    {
+      shortcut: { shift: true, key: 'ArrowRight' },
+      onShortcut: () =>
+        videoPlayer
+          ? (videoPlayer.currentTime = Math.min(videoPlayer.currentTime + 0.4, videoPlayer.duration))
+          : undefined,
+    },
+  ])}
 />
 
 {#if showVideo}
@@ -353,7 +380,7 @@
         style:aspect-ratio={aspectRatio}
         defaultduration={asset.duration! / 1000}
       >
-        {#if featureFlagsManager.value.realtimeTranscoding}
+        {#if publicConfig.ffmpeg.realtime.enabled}
           <hls-video
             bind:this={videoPlayer}
             slot="media"
@@ -364,13 +391,16 @@
             {...useSwipe(onSwipe)}
             class="h-full object-contain"
             oncanplay={(e: Event) => handleCanPlay(e.currentTarget as HTMLVideoElement)}
+            onloadedmetadata={() => (hasLoadedMetadata = true)}
             onended={onVideoEnded}
             onseeking={onSeeking}
             onplaying={(e: Event) => {
-              if (!hasFocused) {
-                (e.currentTarget as HTMLElement).focus();
-                hasFocused = true;
+              if (hasFocused) {
+                return;
               }
+
+              (e.currentTarget as HTMLElement).focus();
+              hasFocused = true;
             }}
             onclose={onClose}
             poster={getAssetMediaUrl({ id: asset.id, size: AssetMediaSize.Preview, cacheKey })}
@@ -387,13 +417,16 @@
             {...useSwipe(onSwipe)}
             class="h-full object-contain"
             oncanplay={(e) => handleCanPlay(e.currentTarget)}
+            onloadedmetadata={() => (hasLoadedMetadata = true)}
             onended={onVideoEnded}
             onseeking={onSeeking}
             onplaying={(e) => {
-              if (!hasFocused) {
-                e.currentTarget.focus();
-                hasFocused = true;
+              if (hasFocused) {
+                return;
               }
+
+              e.currentTarget.focus();
+              hasFocused = true;
             }}
             onclose={onClose}
             poster={getAssetMediaUrl({ id: asset.id, size: AssetMediaSize.Preview, cacheKey })}
@@ -411,7 +444,7 @@
                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
               </media-playback-rate-menu>
             </media-settings-menu-item>
-            {#if featureFlagsManager.value.realtimeTranscoding}
+            {#if publicConfig.ffmpeg.realtime.enabled}
               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
                 {$t('video_quality')}
                 <Icon slot="suffix" icon={mdiChevronRight} class="m-2" />
@@ -424,7 +457,10 @@
           </media-settings-menu>
         {/if}
 
-        <div class="flex h-32 w-full flex-col justify-end bg-linear-to-b to-black/80 px-4">
+        <div class="relative isolate flex h-32 w-full flex-col justify-end px-4">
+          <div
+            class="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-48 bg-black/80 mask-smoothstep-to-top"
+          ></div>
           <media-control-bar part="bottom" class="flex h-10 w-full gap-2">
             <media-play-button class="shrink-0 rounded-full p-2 outline-none">
               <Icon slot="play" icon={mdiPlay} />
@@ -464,8 +500,13 @@
         </div>
       {/if}
 
-      {#if assetViewerManager.isFaceEditMode && videoPlayer}
-        <FaceEditor htmlElement={videoPlayer} {containerWidth} {containerHeight} {assetId} />
+      {#if assetViewerManager.isFaceEditMode && videoPlayer && hasLoadedMetadata}
+        <FaceEditor
+          htmlElement={isHlsElement(videoPlayer) ? videoPlayer.nativeEl : videoPlayer}
+          {containerWidth}
+          {containerHeight}
+          {assetId}
+        />
       {/if}
     {/if}
   </div>

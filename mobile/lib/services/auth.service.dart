@@ -5,12 +5,13 @@ import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/domain/utils/background_sync.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
-import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/network.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
 import 'package:immich_mobile/models/auth/login_response.model.dart';
 import 'package:immich_mobile/providers/api.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/repositories/auth.repository.dart';
 import 'package:immich_mobile/repositories/auth_api.repository.dart';
 import 'package:immich_mobile/services/api.service.dart';
@@ -120,6 +121,7 @@ class AuthService {
       _authRepository.clearLocalData(),
       Store.delete(StoreKey.currentUser),
       Store.delete(StoreKey.accessToken),
+      networkApi.clearCookies(),
       SettingsRepository.instance.clear(const [
         .networkAutoEndpointSwitching,
         .networkPreferredWifiName,
@@ -129,9 +131,9 @@ class AuthService {
     ]);
   }
 
-  Future<void> changePassword(String newPassword) {
+  Future<void> changePassword({required String currentPassword, required String newPassword}) async {
     try {
-      return _authApiRepository.changePassword(newPassword);
+      await _authApiRepository.changePassword(currentPassword: currentPassword, newPassword: newPassword);
     } catch (error, stackTrace) {
       _log.severe("Error changing password", error, stackTrace);
       rethrow;
@@ -162,6 +164,7 @@ class AuthService {
       final localEndpoint = _authRepository.getLocalEndpoint();
       if (localEndpoint != null) {
         await _apiService.resolveAndSetEndpoint(localEndpoint);
+        _log.info("Using local endpoint");
         return localEndpoint;
       }
     } catch (error, stackTrace) {
@@ -181,9 +184,11 @@ class AuthService {
       return null;
     }
 
-    for (final endpoint in endpointList) {
+    for (var i = 0; i < endpointList.length; i++) {
       try {
-        return await _apiService.resolveAndSetEndpoint(endpoint.url);
+        final url = await _apiService.resolveAndSetEndpoint(endpointList[i].url);
+        _log.info("Using external endpoint ${i + 1}");
+        return url;
       } on ApiException catch (error) {
         _log.severe("Cannot resolve endpoint", error);
         continue;

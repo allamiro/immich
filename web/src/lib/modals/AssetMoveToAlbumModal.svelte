@@ -1,24 +1,29 @@
 <script lang="ts">
-  import AlbumPickerModal from '$lib/modals/AlbumPickerModal.svelte';
-  import { moveAssetsToAlbum } from '$lib/services/album.service';
+  import AlbumPickerModal from '#lib/modals/AlbumPickerModal.svelte';
+  import { moveAssetsToAlbumMutation } from '#lib/queries/album.query.ts';
+  import { executeMutation } from '#lib/queries/client.ts';
   import { type AlbumResponseDto } from '@immich/sdk';
   import { t } from 'svelte-i18n';
 
   type Props = {
     assetIds: string[];
     sourceAlbum: AlbumResponseDto;
-    onClose: (removedAssetIds?: string[]) => void;
+    onClose: (moved?: boolean) => void;
   };
 
   const { assetIds, sourceAlbum, onClose }: Props = $props();
 
   const handleClose = async (albums?: AlbumResponseDto[]) => {
-    const [destinationAlbum] = albums ?? [];
-    if (!destinationAlbum) {
+    const [targetAlbum] = albums ?? [];
+    if (!targetAlbum) {
       onClose();
       return;
     }
-    onClose(await moveAssetsToAlbum(sourceAlbum.id, destinationAlbum.id, assetIds));
+
+    const results = await executeMutation(moveAssetsToAlbumMutation, [
+      { id: sourceAlbum.id, albumMoveAssetsDto: { targetAlbumId: targetAlbum.id, assetIds } },
+    ]);
+    onClose(results?.some(({ success }) => success) ?? false);
   };
 </script>
 

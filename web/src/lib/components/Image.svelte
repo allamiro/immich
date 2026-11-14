@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { isFirefox } from '$lib/utils/asset-utils';
-  import { cancelImageUrl } from '$lib/utils/sw-messaging';
+  import { isFirefox } from '#lib/utils/asset-utils.ts';
+  import { cancelImageUrl } from '#lib/utils/sw-messaging.ts';
   import { onDestroy, untrack } from 'svelte';
   import type { HTMLImgAttributes } from 'svelte/elements';
 
@@ -19,12 +19,14 @@
   let destroyed = false;
 
   $effect(() => {
-    if (src !== undefined && capturedSource === undefined) {
-      capturedSource = src;
-      untrack(() => {
-        onStart?.();
-      });
+    if (src === undefined || capturedSource !== undefined) {
+      return;
     }
+
+    capturedSource = src;
+    untrack(() => {
+      onStart?.();
+    });
   });
 
   onDestroy(() => {
@@ -48,7 +50,7 @@
     }
 
     if (isFirefox && ref) {
-      ref.decode().then(completeLoad, completeLoad);
+      ref.decode().then(completeLoad).catch(completeLoad);
       return;
     }
 

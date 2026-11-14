@@ -1,6 +1,6 @@
-import { AssetRepository } from 'src/repositories/asset.repository';
-import { RepositoryInterface } from 'src/types';
 import { Mocked, vitest } from 'vitest';
+import { AssetRepository } from 'src/repositories/asset.repository.js';
+import type { RepositoryInterface } from 'src/types.js';
 
 export const newAssetRepositoryMock = (): Mocked<RepositoryInterface<AssetRepository>> => {
   return {
@@ -28,6 +28,7 @@ export const newAssetRepositoryMock = (): Mocked<RepositoryInterface<AssetReposi
     remove: vitest.fn(),
     findLivePhotoMatch: vitest.fn(),
     getStatistics: vitest.fn(),
+    getCalendarHeatmap: vitest.fn(),
     getTimeBucket: vitest.fn(),
     getTimeBuckets: vitest.fn(),
     getAssetIdByCity: vitest.fn(),

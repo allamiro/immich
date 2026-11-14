@@ -1,32 +1,32 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
-  import { shortcuts, type ShortcutOptions } from '$lib/actions/shortcut';
-  import type { Action } from '$lib/components/asset-viewer/actions/action';
-  import type { AssetCursor } from '$lib/components/asset-viewer/AssetViewer.svelte';
-  import Thumbnail from '$lib/components/assets/thumbnail/Thumbnail.svelte';
-  import { AssetAction } from '$lib/constants';
-  import Portal from '$lib/elements/Portal.svelte';
-  import type { AssetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
-  import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import type { TimelineAsset, Viewport } from '$lib/managers/timeline-manager/types';
-  import AssetDeleteConfirmModal from '$lib/modals/AssetDeleteConfirmModal.svelte';
-  import ShortcutsModal from '$lib/modals/ShortcutsModal.svelte';
-  import { Route } from '$lib/route';
-  import { showDeleteModal } from '$lib/stores/preferences.store';
-  import { handlePromiseError } from '$lib/utils';
-  import { deleteAssets } from '$lib/utils/actions';
-  import { archiveAssets, getNextAsset, getPreviousAsset, navigateToAsset } from '$lib/utils/asset-utils';
-  import { moveFocus } from '$lib/utils/focus-util';
-  import { handleError } from '$lib/utils/handle-error';
-  import { getJustifiedLayoutFromAssets } from '$lib/utils/layout-utils';
-  import { navigate } from '$lib/utils/navigation';
-  import { isTimelineAsset, toTimelineAsset } from '$lib/utils/timeline-util';
-  import { TUNABLES } from '$lib/utils/tunables';
-  import { AssetVisibility, type AssetResponseDto } from '@immich/sdk';
-  import { modalManager } from '@immich/ui';
+  import type { AssetCursor } from '#lib/components/asset-viewer/AssetViewer.svelte';
+  import type { Action } from '#lib/components/asset-viewer/actions/action.ts';
+  import Thumbnail from '#lib/components/assets/thumbnail/Thumbnail.svelte';
+  import { AssetAction } from '#lib/constants.ts';
+  import Portal from '#lib/elements/Portal.svelte';
+  import type { AssetMultiSelectManager } from '#lib/managers/asset-multi-select-manager.svelte.ts';
+  import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import { featureFlagsManager } from '#lib/managers/feature-flags-manager.svelte.ts';
+  import type { TimelineAsset, Viewport } from '#lib/managers/timeline-manager/types.ts';
+  import AssetDeleteConfirmModal from '#lib/modals/AssetDeleteConfirmModal.svelte';
+  import ShortcutsModal from '#lib/modals/ShortcutsModal.svelte';
+  import { Route } from '#lib/route.ts';
+  import { keyboardManager } from '#lib/stores/keyboard-manager.svelte.ts';
+  import { showDeleteModal } from '#lib/stores/preferences.store.ts';
+  import { handlePromiseError } from '#lib/utils.ts';
+  import { deleteAssets } from '#lib/utils/actions.ts';
+  import { getNextAsset, getPreviousAsset, navigateToAsset } from '#lib/utils/asset-utils.ts';
+  import { moveFocus } from '#lib/utils/focus-util.ts';
+  import { handleError } from '#lib/utils/handle-error.ts';
+  import { getJustifiedLayoutFromAssets } from '#lib/utils/layout-utils.ts';
+  import { navigate } from '#lib/utils/navigation.ts';
+  import { isTimelineAsset, toTimelineAsset } from '#lib/utils/timeline-util.ts';
+  import { TUNABLES } from '#lib/utils/tunables.ts';
+  import { type AssetResponseDto } from '@immich/sdk';
+  import { modalManager, shortcuts, type ShortcutOptions } from '@immich/ui';
   import { debounce } from 'lodash-es';
   import { t } from 'svelte-i18n';
+  import { goto } from '$app/navigation';
 
   const {
     TIMELINE: { INTERSECTION_EXPAND_TOP, INTERSECTION_EXPAND_BOTTOM },
@@ -36,7 +36,6 @@
     assets: AssetResponseDto[];
     viewerAssets?: AssetResponseDto[];
     assetInteraction: AssetMultiSelectManager;
-    disableAssetSelect?: boolean;
     showArchiveIcon?: boolean;
     viewport: Viewport;
     onEndReached?: (() => void) | undefined;
@@ -52,7 +51,6 @@
     assets = $bindable(),
     viewerAssets,
     assetInteraction,
-    disableAssetSelect = false,
     showArchiveIcon = false,
     viewport,
     onEndReached = undefined,
@@ -85,7 +83,6 @@
     return top + pageHeaderOffset < window.bottom && top + geometry.getHeight(index) > window.top;
   };
 
-  let shiftKeyIsDown = $state(false);
   let lastAssetMouseEvent: TimelineAsset | null = $state(null);
   let scrollTop = $state(0);
 
@@ -109,32 +106,19 @@
 
   let lastEndReachedHeight = 0;
   $effect(() => {
-    if (geometry.containerHeight - slidingWindow.bottom <= viewport.height) {
-      const contentHeight = geometry.containerHeight;
-      if (lastEndReachedHeight !== contentHeight) {
-        debouncedOnEndReached();
-        lastEndReachedHeight = contentHeight;
-      }
+    if (geometry.containerHeight - slidingWindow.bottom > viewport.height) {
+      return;
+    }
+
+    const contentHeight = geometry.containerHeight;
+    if (lastEndReachedHeight !== contentHeight) {
+      debouncedOnEndReached();
+      lastEndReachedHeight = contentHeight;
     }
   });
 
   const selectAllAssets = () => {
     assetInteraction.selectAssets(assets.map((a) => toTimelineAsset(a)));
-  };
-
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Shift') {
-      event.preventDefault();
-
-      shiftKeyIsDown = true;
-    }
-  };
-
-  const onKeyUp = (event: KeyboardEvent) => {
-    if (event.key === 'Shift') {
-      event.preventDefault();
-      shiftKeyIsDown = false;
-    }
   };
 
   const handleSelectAssets = (asset: TimelineAsset) => {
@@ -168,7 +152,7 @@
   };
 
   const selectAssetCandidates = (endAsset: TimelineAsset) => {
-    if (!shiftKeyIsDown) {
+    if (!keyboardManager.shift) {
       return;
     }
 
@@ -188,7 +172,7 @@
   };
 
   const onSelectStart = (event: Event) => {
-    if (assetInteraction.selectionActive && shiftKeyIsDown) {
+    if (assetInteraction.selectionActive && keyboardManager.shift) {
       event.preventDefault();
     }
   };
@@ -217,17 +201,6 @@
     );
 
     assetInteraction.clear();
-  };
-
-  const toggleArchive = async () => {
-    const ids = await archiveAssets(
-      assetInteraction.assets,
-      assetInteraction.isAllArchived ? AssetVisibility.Timeline : AssetVisibility.Archive,
-    );
-    if (ids) {
-      assets = assets.filter((asset) => !ids.includes(asset.id));
-      assetInteraction.clear();
-    }
   };
 
   const focusNextAsset = () => moveFocus((element) => element.dataset.thumbnailFocusContainer !== undefined, 'next');
@@ -273,7 +246,6 @@
           shortcuts.push(
             { shortcut: { key: 'Delete' }, onShortcut: onDelete },
             { shortcut: { key: 'Delete', shift: true }, onShortcut: () => trashOrDelete(true) },
-            { shortcut: { key: 'a', shift: true }, onShortcut: toggleArchive },
           );
         }
       }
@@ -316,6 +288,7 @@
         }
         break;
       }
+      // no default
     }
   };
 
@@ -332,13 +305,13 @@
   });
 
   $effect(() => {
-    if (!shiftKeyIsDown) {
+    if (!keyboardManager.shift) {
       assetInteraction.clearCandidates();
     }
   });
 
   $effect(() => {
-    if (shiftKeyIsDown && lastAssetMouseEvent) {
+    if (keyboardManager.shift && lastAssetMouseEvent) {
       selectAssetCandidates(lastAssetMouseEvent);
     }
   });
@@ -350,13 +323,8 @@
   });
 </script>
 
-<svelte:document
-  onkeydown={onKeyDown}
-  onkeyup={onKeyUp}
-  onselectstart={onSelectStart}
-  use:shortcuts={shortcutList}
-  onscroll={() => updateSlidingWindow()}
-/>
+<svelte:window {@attach shortcuts(shortcutList)} />
+<svelte:document onselectstart={onSelectStart} onscroll={() => updateSlidingWindow()} />
 
 {#if assets.length > 0}
   <div
@@ -366,10 +334,9 @@
   >
     {#each assets as asset, index (asset.id + '-' + index)}
       {#if isInOrNearViewport(index)}
-        {@const currentAsset = toTimelineAsset(asset)}
         <div class="absolute" style:overflow="clip" style={getStyle(index)}>
+          {const currentAsset = $derived(toTimelineAsset(asset))}
           <Thumbnail
-            readonly={disableAssetSelect}
             onClick={() => {
               if (assetInteraction.selectionActive) {
                 handleSelectAssets(currentAsset);
@@ -403,7 +370,7 @@
 <!-- Overlay Asset Viewer -->
 {#if assetViewerManager.isViewing}
   <Portal target="body">
-    {#await import('$lib/components/asset-viewer/AssetViewer.svelte') then { default: AssetViewer }}
+    {#await import('#lib/components/asset-viewer/AssetViewer.svelte') then { default: AssetViewer }}
       <AssetViewer
         cursor={assetCursor}
         onAction={handleAction}

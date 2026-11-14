@@ -1,27 +1,27 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
-  import { shortcuts, type ShortcutOptions } from '$lib/actions/shortcut';
   import {
     setFocusToAsset as setFocusAssetInit,
     setFocusTo as setFocusToInit,
-  } from '$lib/components/timeline/actions/focus-actions';
-  import type { AssetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
-  import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { eventManager } from '$lib/managers/event-manager.svelte';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
-  import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
-  import AssetDeleteConfirmModal from '$lib/modals/AssetDeleteConfirmModal.svelte';
-  import NavigateToDateModal from '$lib/modals/NavigateToDateModal.svelte';
-  import ShortcutsModal from '$lib/modals/ShortcutsModal.svelte';
-  import { Route } from '$lib/route';
-  import { showDeleteModal } from '$lib/stores/preferences.store';
-  import { searchStore } from '$lib/stores/search.svelte';
-  import { handlePromiseError } from '$lib/utils';
-  import { deleteAssets, updateStackedAssetInTimeline } from '$lib/utils/actions';
-  import { archiveAssets, selectAllAssets, stackAssets } from '$lib/utils/asset-utils';
-  import { AssetVisibility } from '@immich/sdk';
-  import { isModalOpen, modalManager } from '@immich/ui';
+  } from '#lib/components/timeline/actions/focus-actions.ts';
+  import type { AssetMultiSelectManager } from '#lib/managers/asset-multi-select-manager.svelte.ts';
+  import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import { featureFlagsManager } from '#lib/managers/feature-flags-manager.svelte.ts';
+  import { TimelineManager } from '#lib/managers/timeline-manager/timeline-manager.svelte.ts';
+  import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
+  import AssetDeleteConfirmModal from '#lib/modals/AssetDeleteConfirmModal.svelte';
+  import NavigateToDateModal from '#lib/modals/NavigateToDateModal.svelte';
+  import ShortcutsModal from '#lib/modals/ShortcutsModal.svelte';
+  import { Route } from '#lib/route.ts';
+  import { toggleFavoriteAssets } from '#lib/services/asset.service.ts';
+  import { handleStack } from '#lib/services/stack.service.ts';
+  import { keyboardManager } from '#lib/stores/keyboard-manager.svelte.ts';
+  import { showDeleteModal } from '#lib/stores/preferences.store.ts';
+  import { searchStore } from '#lib/stores/search.svelte.ts';
+  import { handlePromiseError } from '#lib/utils.ts';
+  import { deleteAssets } from '#lib/utils/actions.ts';
+  import { selectAllAssets } from '#lib/utils/asset-utils.ts';
+  import { isModalOpen, modalManager, shortcuts, type ShortcutOptions } from '@immich/ui';
+  import { goto } from '$app/navigation';
 
   type Props = {
     timelineManager: TimelineManager;
@@ -58,47 +58,20 @@
   };
 
   const onStackAssets = async () => {
-    const result = await stackAssets(assetInteraction.assets);
-
-    updateStackedAssetInTimeline(timelineManager, result);
-
+    await handleStack(assetInteraction.assets.map((asset) => asset.id));
     onEscape?.();
   };
 
-  const toggleArchive = async () => {
-    const visibility = assetInteraction.isAllArchived ? AssetVisibility.Timeline : AssetVisibility.Archive;
-    const ids = await archiveAssets(assetInteraction.assets, visibility);
-    timelineManager.update(ids, (asset) => (asset.visibility = visibility));
-    eventManager.emit('AssetsArchive', ids);
+  const toggleFavoriteSelected = async () => {
+    const allAssets = assetInteraction.ownedAssets;
+    const isFavorite = allAssets.some((a) => !a.isFavorite);
+    const assetsToUpdate = allAssets.filter((asset) => asset.isFavorite !== isFavorite);
+    await toggleFavoriteAssets(assetsToUpdate, isFavorite);
     assetInteraction.clear();
   };
 
-  let shiftKeyIsDown = $state(false);
-
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (searchStore.isSearchEnabled) {
-      return;
-    }
-
-    if (event.key === 'Shift') {
-      event.preventDefault();
-      shiftKeyIsDown = true;
-    }
-  };
-
-  const onKeyUp = (event: KeyboardEvent) => {
-    if (searchStore.isSearchEnabled) {
-      return;
-    }
-
-    if (event.key === 'Shift') {
-      event.preventDefault();
-      shiftKeyIsDown = false;
-    }
-  };
-
   const onSelectStart = (e: Event) => {
-    if (assetInteraction.selectionActive && shiftKeyIsDown) {
+    if (!searchStore.isSearchEnabled && assetInteraction.selectionActive && keyboardManager.shift) {
       e.preventDefault();
     }
   };
@@ -160,7 +133,7 @@
         { shortcut: { key: 'Delete', shift: true }, onShortcut: () => trashOrDelete(true) },
         { shortcut: { key: 'D', ctrl: true }, onShortcut: () => assetInteraction.clear() },
         { shortcut: { key: 's' }, onShortcut: () => onStackAssets() },
-        { shortcut: { key: 'a', shift: true }, onShortcut: toggleArchive },
+        { shortcut: { key: 'f' }, onShortcut: () => toggleFavoriteSelected() },
       );
     } else {
       // conflicting shortcuts
@@ -171,4 +144,4 @@
   });
 </script>
 
-<svelte:document onkeydown={onKeyDown} onkeyup={onKeyUp} onselectstart={onSelectStart} use:shortcuts={shortcutList} />
+<svelte:window onselectstart={onSelectStart} {@attach shortcuts(shortcutList)} />

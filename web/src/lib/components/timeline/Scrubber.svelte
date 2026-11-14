@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
-  import type { ScrubberMonth, ViewportTopMonth } from '$lib/managers/timeline-manager/types';
-  import { mediaQueryManager } from '$lib/stores/media-query-manager.svelte';
-  import { getTabbable } from '$lib/utils/focus-util';
-  import { type ScrubberListener } from '$lib/utils/timeline-util';
+  import { TimelineManager } from '#lib/managers/timeline-manager/timeline-manager.svelte.ts';
+  import type { ScrubberMonth, ViewportTopMonth } from '#lib/managers/timeline-manager/types.ts';
+  import { mediaQueryManager } from '#lib/stores/media-query-manager.svelte.ts';
+  import { getTabbable } from '#lib/utils/focus-util.ts';
+  import { type ScrubberListener } from '#lib/utils/timeline-util.ts';
   import { Icon } from '@immich/ui';
   import { mdiPlay } from '@mdi/js';
   import { clamp } from 'lodash-es';
@@ -50,7 +50,7 @@
     onScrubKeyDown = undefined,
     startScrub = undefined,
     stopScrub = undefined,
-    // eslint-disable-next-line no-useless-assignment
+
     scrubberWidth = $bindable(),
   }: Props = $props();
 
@@ -99,13 +99,15 @@
   ) => {
     if (scrubberMonth === 'lead-in') {
       return relativeTopOffset * scrubberMonthPercent;
-    } else if (scrubberMonth === 'lead-out') {
+    }
+    if (scrubberMonth === 'lead-out') {
       let offset = relativeTopOffset;
       for (const segment of segments) {
         offset += segment.height;
       }
       return offset + relativeBottomOffset * scrubberMonthPercent;
-    } else if (scrubberMonth) {
+    }
+    if (scrubberMonth) {
       let offset = relativeTopOffset;
       let match = false;
       for (const segment of segments) {
@@ -120,9 +122,8 @@
         offset += scrubberMonthPercent * relativeBottomOffset;
       }
       return offset;
-    } else {
-      return scrubOverallPercent * (height - (PADDING_TOP + PADDING_BOTTOM));
     }
+    return scrubOverallPercent * (height - (PADDING_TOP + PADDING_BOTTOM));
   };
   const scrollY = $derived(
     toScrollFromTimelineMonthPercentage(viewportTopMonth, viewportTopMonthScrollPercent, timelineScrollPercent),
@@ -229,14 +230,14 @@
     if (scrollY !== undefined) {
       if (scrollY < relativeTopOffset) {
         return segments.at(0)?.dateFormatted;
-      } else {
-        let offset = relativeTopOffset;
-        for (const segment of segments) {
-          offset += segment.height;
-        }
-        if (scrollY > offset) {
-          return segments.at(-1)?.dateFormatted;
-        }
+      }
+
+      let offset = relativeTopOffset;
+      for (const segment of segments) {
+        offset += segment.height;
+      }
+      if (scrollY > offset) {
+        return segments.at(-1)?.dateFormatted;
       }
     }
     return scrollSegment?.dateFormatted || '';
@@ -338,7 +339,7 @@
       overallScrollPercent: toTimelineY(hoverY),
       scrubberMonthScrollPercent: timelineMonthPercentY,
     };
-    if (wasDragging === false && isDragging) {
+    if (!wasDragging && isDragging) {
       void startScrub?.(scrubData);
       void onScrub?.(scrubData);
     }

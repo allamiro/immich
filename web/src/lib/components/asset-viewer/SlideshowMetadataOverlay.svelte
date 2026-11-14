@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { SlideshowMetadataOverlayMode, slideshowStore } from '$lib/stores/slideshow.store';
-  import { fromISODateTime, fromISODateTimeUTC } from '$lib/utils/timeline-util';
+  import { SlideshowMetadataOverlayMode, slideshowStore } from '#lib/stores/slideshow.store.ts';
+  import { fromISODateTime, fromISODateTimeUTC } from '#lib/utils/timeline-util.ts';
   import type { AssetResponseDto } from '@immich/sdk';
   import { Text } from '@immich/ui';
   import { DateTime } from 'luxon';
@@ -18,7 +18,7 @@
   const description = $derived(asset.exifInfo?.description?.trim() || '');
 
   const dateTime = $derived(
-    asset.exifInfo?.timeZone && asset.exifInfo?.dateTimeOriginal
+    asset.exifInfo?.timeZone && asset.exifInfo.dateTimeOriginal
       ? fromISODateTime(asset.exifInfo.dateTimeOriginal, asset.exifInfo.timeZone)
       : fromISODateTimeUTC(asset.localDateTime),
   );

@@ -1,16 +1,17 @@
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_mobile/data/db/main/database.dart';
 import 'package:immich_mobile/domain/services/store.service.dart';
-import 'package:immich_mobile/infrastructure/repositories/db.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/store.repository.dart';
 import 'package:immich_mobile/models/auth/auxilary_endpoint.model.dart';
+import 'package:immich_mobile/platform/network_api.g.dart';
 import 'package:immich_mobile/services/auth.service.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:openapi/api.dart';
 
-import '../domain/service.mock.dart';
 import '../repository.mocks.dart';
 import '../service.mocks.dart';
 
@@ -29,21 +30,16 @@ void main() {
     apiService = MockApiService();
     networkService = MockNetworkService();
     backgroundSyncManager = MockBackgroundSyncManager();
-    sut = AuthService(
-      authApiRepository,
-      authRepository,
-      apiService,
-      networkService,
-      backgroundSyncManager,
-    );
+    sut = AuthService(authApiRepository, authRepository, apiService, networkService, backgroundSyncManager);
 
     registerFallbackValue(Uri());
   });
 
   setUpAll(() async {
-    WidgetsFlutterBinding.ensureInitialized();
+    TestWidgetsFlutterBinding.ensureInitialized();
     db = Drift(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
-    await StoreService.init(storeRepository: DriftStoreRepository(db));
+    await StoreService.init(storeRepository: StoreRepository(db));
+    await SettingsRepository.ensureInitialized(db);
   });
 
   tearDownAll(() async {
@@ -110,7 +106,7 @@ void main() {
     });
 
     test('Should return null if auto endpoint switching is disabled', () async {
-      when(() => authRepository.getEndpointSwitchingFeature()).thenReturn((false));
+      when(() => authRepository.getEndpointSwitchingFeature()).thenReturn(false);
 
       final result = await sut.setOpenApiServiceEndpoint();
 
@@ -243,6 +239,32 @@ void main() {
       verify(() => authRepository.getPreferredWifiName()).called(1);
       verify(() => authRepository.getExternalEndpointList()).called(1);
       verify(() => apiService.resolveAndSetEndpoint('https://external.endpoint')).called(1);
+    });
+  });
+
+  group('logout', () {
+    test('Should clear native cookies after the server logout fails', () async {
+      final calls = <String>[];
+      when(() => authApiRepository.logout()).thenAnswer((_) async {
+        calls.add('logout');
+        throw ApiException(503, 'Server is not reachable');
+      });
+      when(() => backgroundSyncManager.cancel()).thenAnswer((_) async {});
+      when(() => authRepository.clearLocalData()).thenAnswer((_) async {});
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler(
+        const BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.immich_mobile.NetworkApi.clearCookies',
+          NetworkApi.pigeonChannelCodec,
+        ),
+        (_) async {
+          calls.add('clearCookies');
+          return <Object?>[null];
+        },
+      );
+
+      await sut.logout();
+
+      expect(calls, ['logout', 'clearCookies']);
     });
   });
 }

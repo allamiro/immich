@@ -1,31 +1,31 @@
-import { ArgumentMetadata, FileValidator, Injectable, ParseUUIDPipe } from '@nestjs/common';
-import { createZodDto } from 'nestjs-zod';
+import { FileValidator, Injectable } from '@nestjs/common';
+import { DateTime } from 'luxon';
 import sanitize from 'sanitize-filename';
-import { isIP, isIPRange } from 'validator';
+import validator from 'validator';
 import z from 'zod';
+import { createZodDto } from 'src/zod.js';
 
 export type IsIPRangeOptions = { requireCIDR?: boolean };
 
 function isIPOrRange(value: string, options?: IsIPRangeOptions): boolean {
   const { requireCIDR = true } = options ?? {};
-  if (isIPRange(value)) {
+  // eslint-disable-next-line import-x/no-named-as-default-member
+  if (validator.isIPRange(value)) {
     return true;
   }
-  if (!requireCIDR && isIP(value)) {
-    return true;
-  }
-  return false;
+  // eslint-disable-next-line import-x/no-named-as-default-member
+  return !requireCIDR && validator.isIP(value);
 }
 
 /**
- * Zod schema that validates an array of strings as IP addresses or IP/CIDR ranges.
- * When requireCIDR is true (default), plain IPs are rejected; only CIDR ranges are allowed.
- *
- * @example
- * z.string().optional().transform(...).pipe(IsIPRange())
- * @example
- * z.string().optional().transform(...).pipe(IsIPRange({ requireCIDR: false }))
- */
+Zod schema that validates an array of strings as IP addresses or IP/CIDR ranges.
+When requireCIDR is true (default), plain IPs are rejected; only CIDR ranges are allowed.
+
+@example
+z.string().optional().transform(...).pipe(IsIPRange())
+@example
+z.string().optional().transform(...).pipe(IsIPRange({ requireCIDR: false }))
+*/
 export function IsIPRange(options?: IsIPRangeOptions) {
   return z
     .array(z.string())
@@ -33,36 +33,36 @@ export function IsIPRange(options?: IsIPRangeOptions) {
 }
 
 /**
- * Like z.object().partial(), but rejects objects where every field is undefined.
- * Use for update/patch DTOs where at least one field must be provided.
- *
- * @example
- * nonEmptyPartial({ name: z.string(), bio: z.string() }).meta({ id: 'UpdateDto' });
- */
+Like z.object().partial(), but rejects objects where every field is undefined.
+Use for update/patch DTOs where at least one field must be provided.
+
+@example
+nonEmptyPartial({ name: z.string(), bio: z.string() }).meta({ id: 'UpdateDto' });
+*/
 export function nonEmptyPartial<T extends z.ZodRawShape>(shape: T) {
   return z
     .object(shape)
     .partial()
     .refine((data) => Object.values(data as Record<string, unknown>).some((value) => value !== undefined), {
-      message: 'At least one field must be provided',
+      message: `At least one of the following fields is required: ${Object.keys(shape).join(', ')}`,
     });
 }
 
 /**
- * Zod schema that validates sibling-exclusion for object schemas.
- * Validation passes when the target property is missing, or when none of the sibling properties are present.
- * Use with .pipe() like IsIPRange.
- *
- * @example
- * const Schema = z.object({ a: z.string().optional(), b: z.string().optional() });
- * Schema.pipe(IsNotSiblingOf(Schema, 'a', ['b']));
- */
+Zod schema that validates sibling-exclusion for object schemas.
+Validation passes when the target property is missing, or when none of the sibling properties are present.
+Use with .pipe() like IsIPRange.
+
+@example
+const Schema = z.object({ a: z.string().optional(), b: z.string().optional() });
+Schema.pipe(IsNotSiblingOf(Schema, 'a', ['b']));
+*/
 export function IsNotSiblingOf<
   TSchema extends z.ZodObject<z.ZodRawShape>,
   TKey extends z.infer<ReturnType<TSchema['keyof']>> & keyof z.infer<TSchema>,
 >(_schema: TSchema, property: TKey, siblings: TKey[]) {
   type T = z.infer<TSchema>;
-  const message = `${String(property)} cannot exist alongside ${siblings.join(' or ')}`;
+  const message = `${property} cannot exist alongside ${siblings.join(' or ')}`;
   return z.custom<T>().refine(
     (data) => {
       if (data[property] === undefined) {
@@ -72,16 +72,6 @@ export function IsNotSiblingOf<
     },
     { message },
   );
-}
-
-@Injectable()
-export class ParseMeUUIDPipe extends ParseUUIDPipe {
-  async transform(value: string, metadata: ArgumentMetadata) {
-    if (value == 'me') {
-      return value;
-    }
-    return super.transform(value, metadata);
-  }
 }
 
 @Injectable()
@@ -110,6 +100,12 @@ const UUIDParamSchema = z.object({
 
 export class UUIDParamDto extends createZodDto(UUIDParamSchema) {}
 
+const UUIDv7ParamSchema = z.object({
+  id: z.uuidv7(),
+});
+
+export class UUIDv7ParamDto extends createZodDto(UUIDv7ParamSchema) {}
+
 const UUIDAssetIDParamSchema = z.object({
   id: z.uuidv4(),
   assetId: z.uuidv4(),
@@ -126,25 +122,34 @@ const FilenameParamSchema = z.object({
 export class FilenameParamDto extends createZodDto(FilenameParamSchema) {}
 
 /**
- * Unified email validation
- * Converts email strings to lowercase and validates against HTML5 email regex
- * @docs https://zod.dev/api?id=email
- */
+The HTML5 email regex, but with unicode support, so that international email addresses
+(unicode local parts and internationalized domain names) are accepted.
+@see {@link z.regexes.html5Email}
+*/
+const unicodeEmail =
+  /^[\p{L}\p{M}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]{0,61}[\p{L}\p{M}\p{N}])?(?:\.[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]{0,61}[\p{L}\p{M}\p{N}])?)*$/u;
+
+/**
+Unified email validation
+Converts email strings to lowercase and validates against a unicode aware email regex
+@docs https://zod.dev/api?id=email
+*/
 export const toEmail = z
   .email({
-    pattern: z.regexes.html5Email,
+    pattern: unicodeEmail,
     error: (iss) => `Invalid input: expected email, received ${typeof iss.input}`,
   })
   .transform((val) => val.toLowerCase());
 
 /**
- * Parse ISO 8601 datetime strings to Date objects
- * @docs https://zod.dev/api?id=codec
- */
+Parse ISO 8601 datetime strings to Date objects
+@docs https://zod.dev/api?id=codec
+*/
 export const isoDatetimeToDate = z
   .codec(
     z.iso.datetime({
       error: (iss) => `Invalid input: expected ISO 8601 datetime string, received ${typeof iss.input}`,
+      offset: true,
     }),
     z.date(),
     {
@@ -155,9 +160,9 @@ export const isoDatetimeToDate = z
   .meta({ example: '2024-01-01T00:00:00.000Z' });
 
 /**
- * Parse ISO date strings to Date objects
- * @docs https://zod.dev/api?id=codec
- */
+Parse ISO date strings to Date objects
+@docs https://zod.dev/api?id=codec
+*/
 export const isoDateToDate = z
   .codec(
     z.iso.date({
@@ -166,61 +171,50 @@ export const isoDateToDate = z
     z.date(),
     {
       decode: (isoString) => new Date(isoString),
-      encode: (date) => {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, '0');
-        const d = String(date.getDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
-      },
+      encode: (date) => DateTime.fromJSDate(date, { zone: 'utc' }).toFormat('yyyy-MM-dd'),
     },
   )
   .meta({ example: '2024-01-01' });
 
-export const isValidTime = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Invalid input: expected string in HH:mm format, received string');
+/**
+Latitude in range [-90, 90]. Reuse for body or query params.
+
+@example
+// Regular (body): optional coordinates
+latitudeSchema.optional().describe('Latitude coordinate')
+
+@example
+// Pipe (query): coerce string to number then validate range
+z.coerce.number().pipe(latitudeSchema).describe('Latitude (-90 to 90)')
+*/
+export const latitudeSchema = z.number().meta({ format: 'double' }).min(-90).max(90);
 
 /**
- * Latitude in range [-90, 90]. Reuse for body or query params.
- *
- * @example
- * // Regular (body): optional coordinates
- * latitudeSchema.optional().describe('Latitude coordinate')
- *
- * @example
- * // Pipe (query): coerce string to number then validate range
- * z.coerce.number().pipe(latitudeSchema).describe('Latitude (-90 to 90)')
- */
-export const latitudeSchema = z.number().min(-90).max(90);
+Longitude in range [-180, 180]. Reuse for body or query params.
+
+@example
+// Regular (body): optional coordinates
+longitudeSchema.optional().describe('Longitude coordinate')
+
+@example
+// Pipe (query): coerce string to number then validate range
+z.coerce.number().pipe(longitudeSchema).describe('Longitude (-180 to 180)')
+*/
+export const longitudeSchema = z.number().meta({ format: 'double' }).min(-180).max(180);
 
 /**
- * Longitude in range [-180, 180]. Reuse for body or query params.
- *
- * @example
- * // Regular (body): optional coordinates
- * longitudeSchema.optional().describe('Longitude coordinate')
- *
- * @example
- * // Pipe (query): coerce string to number then validate range
- * z.coerce.number().pipe(longitudeSchema).describe('Longitude (-180 to 180)')
- */
-export const longitudeSchema = z.number().min(-180).max(180);
-
-/**
- * Parse string to boolean
- * This should be used for boolean query parameters and path parameters, but not for boolean request body parameters, as the first are always string.
- * We don't use z.coerce.boolean() as any truthy value is considered true
- * z.stringbool() is a more robust way to parse strings to booleans as it lets you specify the truthy and falsy values and the case sensitivity.
- * @docs https://zod.dev/api?id=coercion
- * @docs https://zod.dev/api?id=stringbool
- */
+Parse string to boolean
+This should be used for boolean query parameters and path parameters, but not for boolean request body parameters, as the first are always string.
+We don't use z.coerce.boolean() as any truthy value is considered true
+z.stringbool() is a more robust way to parse strings to booleans as it lets you specify the truthy and falsy values and the case sensitivity.
+@docs https://zod.dev/api?id=coercion
+@docs https://zod.dev/api?id=stringbool
+*/
 export const stringToBool = z
   .stringbool({ truthy: ['true'], falsy: ['false'], case: 'sensitive' })
   .meta({ type: 'boolean' });
 
-/**
- * Parse JSON strings from multipart/form-data
- */
+/** Parse JSON strings from multipart/form-data */
 export const JsonParsed = z.transform((val, ctx) => {
   if (typeof val === 'string') {
     try {
@@ -238,17 +232,22 @@ export const JsonParsed = z.transform((val, ctx) => {
 });
 
 /**
- * Hex color validation and normalization.
- * Accepts formats: #RGB, #RGBA, #RRGGBB, #RRGGBBAA (with or without # prefix).
- * Normalizes output to always include the # prefix.
- *
- * @example
- * hexColor.optional()
- */
+Hex color validation and normalization.
+Accepts formats: #RGB, #RGBA, #RRGGBB, #RRGGBBAA (with or without # prefix).
+Normalizes output to always include the # prefix.
+
+@example
+hexColor.optional()
+*/
 const hexColorRegex = /^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
 export const hexColor = z
   .string()
   .regex(hexColorRegex)
   .transform((val) => (val.startsWith('#') ? val : `#${val}`));
 
-export const sanitizeFilename = z.string().transform((val) => sanitize(val.replaceAll('.', '')));
+export const sanitizeFilename = z.string().transform((val) => sanitize(val));
+
+export const uniqueIds = z.array(z.uuid()).refine((ids) => ids.length === new Set(ids).size, 'Items must be unique');
+
+export const queryParamArray = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (typeof value === 'string' ? value.split(',') : value), z.array(schema));

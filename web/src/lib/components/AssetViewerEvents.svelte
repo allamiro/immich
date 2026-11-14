@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { assetViewerManager, type Events } from '$lib/managers/asset-viewer-manager.svelte';
-  import type { EventCallback, EventMap } from '$lib/utils/base-event-manager.svelte';
+  import { assetViewerManager, type Events } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import type { EventCallback, EventMap } from '#lib/utils/base-event-manager.svelte.ts';
   import { onMount } from 'svelte';
 
   type Props = {
@@ -13,10 +13,12 @@
     const events: EventMap<Events> = {};
 
     for (const [name, listener] of Object.entries(props)) {
-      if (listener) {
-        const event = name.slice(2) as keyof Events;
-        events[event] = listener as EventCallback<Events, typeof event>;
+      if (!listener) {
+        continue;
       }
+
+      const event = name.slice(2) as keyof Events;
+      events[event] = listener as EventCallback<Events, typeof event>;
     }
 
     return assetViewerManager.on(events);

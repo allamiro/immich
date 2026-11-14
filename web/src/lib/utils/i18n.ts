@@ -1,6 +1,6 @@
+import type { Lang } from '#lib/constants.ts';
 import { locale, t, waitLocale } from 'svelte-i18n';
 import { get, type Unsubscriber } from 'svelte/store';
-import type { Lang } from '$lib/constants';
 
 export const getFormatter = async () => {
   let unsubscribe: Unsubscriber | undefined;
@@ -13,13 +13,21 @@ export const getFormatter = async () => {
   return get(t);
 };
 
-const modules = import.meta.glob('$i18n/*.json');
+const aliases: Record<string, string> = {
+  'zh-CN': 'zh-Hans',
+  'zh-HK': 'zh-Hant',
+  'zh-MO': 'zh-Hant',
+  'zh-SG': 'zh-Hans',
+  'zh-TW': 'zh-Hant',
+};
+
+const modules = import.meta.glob('#i18n/*.json');
 
 const fileCodes = Object.keys(modules)
   .map((path) => path.match(/\/(\w+)\.json$/)?.[1])
   .filter(Boolean) as string[];
 
-const convertBCP47 = (code: string) => code.replaceAll('_', '-');
+export const convertBCP47 = (code: string) => code.replaceAll('_', '-');
 
 export const langCodes = fileCodes.map((code) => convertBCP47(code));
 
@@ -33,7 +41,9 @@ const getSubLocales = (locale: string) => {
 
 export const getClosestAvailableLocale = (locales: readonly string[], allLocales: readonly string[]) => {
   const allLocalesSet = new Set(allLocales.map((locale) => convertBCP47(locale)));
-  return locales.find((locale) => getSubLocales(locale).some((subLocale) => allLocalesSet.has(subLocale)));
+  return locales
+    .map((locale) => aliases[locale] ?? locale)
+    .find((locale) => getSubLocales(locale).some((subLocale) => allLocalesSet.has(subLocale)));
 };
 
 export const getPreferredLocale = () => getClosestAvailableLocale(navigator.languages, langCodes);
@@ -112,8 +122,11 @@ const capitalize = (string: string) =>
     .join(' ');
 
 const nonIntlNames: Record<string, string> = {
-  mfa: 'Malay (Pattani)',
   bi: 'Bislama',
+  kxm: 'Khmer Surin',
+  mfa: 'Malay (Pattani)',
+  swg: 'Schwäbisch',
+  tl: 'Tagalog',
 };
 
 const getLanguageName = (code: string) =>
@@ -124,7 +137,7 @@ export const langs: Lang[] = [
     .map((code) => ({
       name: getLanguageName(convertBCP47(code)),
       code,
-      loader: () => import(`$i18n/${code}.json`),
+      loader: () => import(`#i18n/${code}.json`),
       rtl: rtlCodes.has(code),
     }))
     .sort((a, b) => a.code.localeCompare(b.code)),

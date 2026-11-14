@@ -1,11 +1,16 @@
 package app.alextran.immich.images
 
 import android.content.Context
+import android.graphics.ImageDecoder
+import android.os.Build
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
+import android.util.Size
+import androidx.exifinterface.media.ExifInterface
 import app.alextran.immich.INITIAL_BUFFER_SIZE
 import app.alextran.immich.NativeBuffer
 import app.alextran.immich.NativeByteBuffer
+import app.alextran.immich.NativeImage
 import app.alextran.immich.core.HttpClientManager
 import kotlinx.coroutines.*
 import okhttp3.Cache
@@ -22,10 +27,68 @@ import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 private const val MAX_PREALLOC_BYTES = 128 * 1024 * 1024
 
 private class RemoteRequest(val cancellationSignal: CancellationSignal)
+
+// The full mimeTypes.raw set the server can serve (short + vendor forms).
+private val RAW_MIME_TYPES = setOf(
+  "image/3fr", "image/ari", "image/arw",
+  "image/cap", "image/cin", "image/cr2",
+  "image/cr3", "image/crw", "image/dcr",
+  "image/dng", "image/erf", "image/fff",
+  "image/iiq", "image/k25", "image/kdc",
+  "image/mrw", "image/nef", "image/nrw",
+  "image/orf", "image/ori", "image/pef",
+  "image/psd", "image/raf", "image/raw",
+  "image/rw2", "image/rwl", "image/sr2",
+  "image/srf", "image/srw", "image/vnd.adobe.photoshop",
+  "image/x-adobe-dng", "image/x-arriflex-ari", "image/x-canon-cr2",
+  "image/x-canon-cr3", "image/x-canon-crw", "image/x-epson-erf",
+  "image/x-fuji-raf", "image/x-hasselblad-3fr", "image/x-hasselblad-fff",
+  "image/x-kodak-dcr", "image/x-kodak-k25", "image/x-kodak-kdc",
+  "image/x-leica-rwl", "image/x-minolta-mrw", "image/x-nikon-nef",
+  "image/x-nikon-nrw", "image/x-olympus-orf", "image/x-olympus-ori",
+  "image/x-panasonic-raw", "image/x-panasonic-rw2", "image/x-pentax-pef",
+  "image/x-phantom-cin", "image/x-phaseone-cap", "image/x-phaseone-iiq",
+  "image/x-samsung-srw", "image/x-sigma-x3f", "image/x-sony-arw",
+  "image/x-sony-sr2", "image/x-sony-srf", "image/x3f",
+)
+
+private fun mimeType(contentType: String?) = contentType?.substringBefore(';')?.trim()?.lowercase()
+
+private fun isRawMime(contentType: String?) = mimeType(contentType) in RAW_MIME_TYPES
+
+private fun decodeInCore(
+  buffer: NativeByteBuffer,
+  width: Long?,
+  height: Long?,
+  signal: CancellationSignal
+): Map<String, Long>? {
+  val info = IntArray(3)
+  // The fetch is done, so cancelling now stops the decode instead.
+  val cancelled = ByteBuffer.allocateDirect(1)
+  signal.setOnCancelListener { NativeImage.cancel(cancelled) }
+
+  val pointer = if (signal.isCanceled) 0L else NativeImage.decode(
+    buffer.pointer,
+    buffer.offset,
+    width?.toInt() ?: 0,
+    height?.toInt() ?: 0,
+    MAX_PIXEL_SIZE,
+    cancelled,
+    info
+  )
+
+  return if (pointer == 0L) null else mapOf(
+    "pointer" to pointer,
+    "width" to info[0].toLong(),
+    "height" to info[1].toLong(),
+    "rowBytes" to info[2].toLong()
+  )
+}
 
 class RemoteImagesImpl(context: Context) : RemoteImageApi {
   private val requestMap = ConcurrentHashMap<Long, RemoteRequest>()
@@ -36,12 +99,18 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
 
   companion object {
     val CANCELLED = Result.success<Map<String, Long>?>(null)
+
+    // Shared, process-lifetime pool: RemoteImagesImpl is re-created per FlutterEngine, so a
+    // per-instance pool would leak threads across engine restarts.
+    private val decodeExecutor = Executors.newFixedThreadPool(2)
   }
 
   override fun requestImage(
     url: String,
     requestId: Long,
-    @Suppress("UNUSED_PARAMETER") preferEncoded: Boolean, // always returns encoded; setting has no effect on Android
+    preferEncoded: Boolean,
+    width: Long?,
+    height: Long?,
     callback: (Result<Map<String, Long>?>) -> Unit
   ) {
     val signal = CancellationSignal()
@@ -50,13 +119,91 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
     ImageFetcherManager.fetch(
       url,
       signal,
-      onSuccess = { buffer ->
-        requestMap.remove(requestId)
+      onSuccess = { buffer, contentType ->
         if (signal.isCanceled) {
-          NativeBuffer.free(buffer.pointer)
+          requestMap.remove(requestId)
+          buffer.free()
           return@fetch callback(CANCELLED)
         }
 
+        // Neither Android nor Flutter can decode JPEG XL, or AVIF before Android 12, so this applies to
+        // encoded requests too.
+        val mime = mimeType(contentType)
+        if (mime == "image/jxl" || (mime == "image/avif" && Build.VERSION.SDK_INT < Build.VERSION_CODES.S)) {
+          decodeExecutor.execute {
+            val res = decodeInCore(buffer, width, height, signal)
+            buffer.free()
+            requestMap.remove(requestId)
+            callback(
+              when {
+                res != null -> Result.success(res)
+                signal.isCanceled -> CANCELLED
+                else -> Result.failure(IOException("Failed to decode $mime"))
+              }
+            )
+          }
+          return@fetch
+        }
+
+        // Decode natively when the caller wants pixels: Flutter's fallback decoder copies
+        // 10-bit bitmaps (RGBA_1010102) as if they were rgba8888, garbling colors. Decode on a
+        // dedicated pool - the fetch callback threads are shared with video streaming. On any
+        // decode failure (including OOM on huge originals), hand Flutter the encoded bytes as
+        // before.
+        if (!preferEncoded && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          decodeExecutor.execute {
+            // The core decodes AVIF faster than Android, which still gets what the core can't, like grids.
+            val fromCore = if (mime == "image/avif") decodeInCore(buffer, width, height, signal) else null
+            val res = fromCore ?: if (signal.isCanceled) null else try {
+              // The embedded preview a raw decodes to has no orientation, so read the container's.
+              val orientation = if (isRawMime(contentType)) {
+                readRawOrientation(NativeBuffer.wrap(buffer.pointer, buffer.offset), buffer.offset)
+              } else {
+                ExifInterface.ORIENTATION_NORMAL
+              }
+              val target = when (orientation) {
+                ExifInterface.ORIENTATION_TRANSPOSE,
+                ExifInterface.ORIENTATION_ROTATE_90,
+                ExifInterface.ORIENTATION_TRANSVERSE,
+                ExifInterface.ORIENTATION_ROTATE_270 -> Size(height?.toInt() ?: 0, width?.toInt() ?: 0)
+                else -> Size(width?.toInt() ?: 0, height?.toInt() ?: 0)
+              }
+              val source = ImageDecoder.createSource(NativeBuffer.wrap(buffer.pointer, buffer.offset))
+              val bitmap = source.decodeBitmap(target, exactSize = true)
+              if (orientation == ExifInterface.ORIENTATION_NORMAL || orientation == ExifInterface.ORIENTATION_UNDEFINED) {
+                bitmap.toNativeBuffer()
+              } else {
+                rotateToNativeBuffer(bitmap, orientation)
+              }
+            } catch (_: Throwable) {
+              null
+            }
+            requestMap.remove(requestId)
+            when {
+              // Deliver even if the request was cancelled meanwhile: re-checking here would orphan
+              // res's malloc, and Dart frees the buffer itself when it sees the cancel.
+              res != null -> {
+                buffer.free()
+                callback(Result.success(res))
+              }
+              signal.isCanceled -> {
+                buffer.free()
+                callback(CANCELLED)
+              }
+              else -> callback(
+                Result.success(
+                  mapOf(
+                    "pointer" to buffer.pointer,
+                    "length" to buffer.offset.toLong()
+                  )
+                )
+              )
+            }
+          }
+          return@fetch
+        }
+
+        requestMap.remove(requestId)
         callback(
           Result.success(
             mapOf(
@@ -108,7 +255,7 @@ private object ImageFetcherManager {
   fun fetch(
     url: String,
     signal: CancellationSignal,
-    onSuccess: (NativeByteBuffer) -> Unit,
+    onSuccess: (NativeByteBuffer, String?) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
     fetcher.fetch(url, signal, onSuccess, onFailure)
@@ -139,7 +286,7 @@ private sealed interface ImageFetcher {
   fun fetch(
     url: String,
     signal: CancellationSignal,
-    onSuccess: (NativeByteBuffer) -> Unit,
+    onSuccess: (NativeByteBuffer, String?) -> Unit,
     onFailure: (Exception) -> Unit,
   )
 
@@ -157,7 +304,7 @@ private class CronetImageFetcher : ImageFetcher {
   override fun fetch(
     url: String,
     signal: CancellationSignal,
-    onSuccess: (NativeByteBuffer) -> Unit,
+    onSuccess: (NativeByteBuffer, String?) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
     synchronized(stateLock) {
@@ -175,7 +322,11 @@ private class CronetImageFetcher : ImageFetcher {
       requestBuilder.addHeader(key, value)
     }
     val request = requestBuilder.build()
-    signal.setOnCancelListener(request::cancel)
+    // Cronet's disk cache can still use a read buffer after onCanceled, so only cancel between reads.
+    signal.setOnCancelListener {
+      callback.requestCancel = true
+      if (!callback.receivingResponse) request.cancel()
+    }
     request.start()
   }
 
@@ -225,18 +376,22 @@ private class CronetImageFetcher : ImageFetcher {
   }
 
   private class FetchCallback(
-    private val onSuccess: (NativeByteBuffer) -> Unit,
+    private val onSuccess: (NativeByteBuffer, String?) -> Unit,
     private val onFailure: (Exception) -> Unit,
     private val onComplete: () -> Unit,
   ) : UrlRequest.Callback() {
     private var buffer: NativeByteBuffer? = null
     private var error: Exception? = null
+    @Volatile var receivingResponse = false
+    @Volatile var requestCancel = false
 
     override fun onRedirectReceived(request: UrlRequest, info: UrlResponseInfo, newUrl: String) {
       request.followRedirect()
     }
 
     override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
+      receivingResponse = true
+      if (requestCancel) return request.cancel()
       if (info.httpStatusCode !in 200..299) {
         error = IOException("HTTP ${info.httpStatusCode}: ${info.httpStatusText}")
         return request.cancel()
@@ -264,6 +419,7 @@ private class CronetImageFetcher : ImageFetcher {
       info: UrlResponseInfo,
       byteBuffer: ByteBuffer
     ) {
+      if (requestCancel) return request.cancel()
       try {
         // Always pass a fresh wrap so byteBuffer.position() represents only the
         // bytes Cronet wrote in this iteration. Reusing the caller-supplied
@@ -282,7 +438,9 @@ private class CronetImageFetcher : ImageFetcher {
     }
 
     override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
-      onSuccess(buffer!!)
+      val contentType = info.allHeaders.entries
+        .firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value?.firstOrNull()
+      onSuccess(buffer!!, contentType)
       onComplete()
     }
 
@@ -333,7 +491,7 @@ private class OkHttpImageFetcher private constructor(
   override fun fetch(
     url: String,
     signal: CancellationSignal,
-    onSuccess: (NativeByteBuffer) -> Unit,
+    onSuccess: (NativeByteBuffer, String?) -> Unit,
     onFailure: (Exception) -> Unit,
   ) {
     synchronized(stateLock) {
@@ -387,7 +545,7 @@ private class OkHttpImageFetcher private constructor(
                   buffer.ensureHeadroom()
                 }
               }
-              onSuccess(buffer)
+              onSuccess(buffer, response.header("Content-Type"))
             } catch (e: Exception) {
               buffer.free()
               onFailure(e)
