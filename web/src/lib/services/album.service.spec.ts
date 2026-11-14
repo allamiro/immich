@@ -1,6 +1,13 @@
-import { addAssetsToAlbum, BulkIdErrorReason, removeAssetFromAlbum, type BulkIdResponseDto } from '@immich/sdk';
+import {
+  addAssetsToAlbum,
+  BulkIdErrorReason,
+  moveAssetsToAlbum as moveToAlbum,
+  removeAssetFromAlbum,
+  type BulkIdResponseDto,
+} from '@immich/sdk';
 import { toastManager } from '@immich/ui';
 import { vitest } from 'vitest';
+import { goto } from '$app/navigation';
 import { moveAssetsToAlbum } from '$lib/services/album.service';
 import { handleError } from '$lib/utils/handle-error';
 import { getFormatter } from '$lib/utils/i18n';
@@ -10,6 +17,10 @@ vitest.mock('@immich/ui', () => ({
     primary: vitest.fn(),
     warning: vitest.fn(),
   },
+}));
+
+vitest.mock('$app/navigation', () => ({
+  goto: vitest.fn(),
 }));
 
 vitest.mock('$lib/utils/i18n', () => ({
@@ -32,123 +43,99 @@ describe('AlbumService', () => {
 
     beforeEach(() => {
       vitest.resetAllMocks();
-      $t.mockReturnValue('formatter');
+      $t.mockImplementation((key: string) => key);
       vitest.mocked(getFormatter).mockResolvedValue($t);
     });
 
-    it('should remove every added asset from the source album', async () => {
-      vitest.mocked(addAssetsToAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
-      vitest.mocked(removeAssetFromAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
+    it('should move every asset with a single request', async () => {
+      vitest.mocked(moveToAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
+      const movedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
 
-      expect(removedIds).toEqual(['asset-1', 'asset-2']);
-      expect(addAssetsToAlbum).toHaveBeenCalledWith({ id: 'destination', bulkIdsDto: { ids: ['asset-1', 'asset-2'] } });
-      expect(removeAssetFromAlbum).toHaveBeenCalledWith({ id: 'source', bulkIdsDto: { ids: ['asset-1', 'asset-2'] } });
+      expect(movedIds).toEqual(['asset-1', 'asset-2']);
+      expect(moveToAlbum).toHaveBeenCalledTimes(1);
+      expect(moveToAlbum).toHaveBeenCalledWith({
+        id: 'source',
+        albumMoveAssetsDto: { targetAlbumId: 'destination', assetIds: ['asset-1', 'asset-2'] },
+      });
+      expect(addAssetsToAlbum).not.toHaveBeenCalled();
+      expect(removeAssetFromAlbum).not.toHaveBeenCalled();
       expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 2 } });
       expect(toastManager.primary).toHaveBeenCalledTimes(1);
       expect(toastManager.warning).not.toHaveBeenCalled();
     });
 
-    it('should also remove assets already in the destination album from the source album', async () => {
-      vitest
-        .mocked(addAssetsToAlbum)
-        .mockResolvedValue([succeeded('asset-1'), failed('asset-2', BulkIdErrorReason.Duplicate)]);
-      vitest.mocked(removeAssetFromAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
+    it('should open the target album from the success toast', async () => {
+      vitest.mocked(moveToAlbum).mockResolvedValue([succeeded('asset-1')]);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
+      await moveAssetsToAlbum('source', 'destination', ['asset-1']);
 
-      expect(removedIds).toEqual(['asset-1', 'asset-2']);
-      expect(removeAssetFromAlbum).toHaveBeenCalledWith({ id: 'source', bulkIdsDto: { ids: ['asset-1', 'asset-2'] } });
-      expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 2 } });
-      expect(toastManager.warning).not.toHaveBeenCalled();
+      const [toast] = vitest.mocked(toastManager.primary).mock.calls[0];
+      expect(toast).toEqual({
+        description: 'assets_moved_to_album_count',
+        button: { label: 'view_album', onclick: expect.any(Function) },
+      });
+
+      await (toast as { button: { onclick: () => unknown } }).button.onclick();
+
+      expect(goto).toHaveBeenCalledWith('/albums/destination');
     });
 
-    it('should count assets as moved when all of them were already in the destination album', async () => {
+    it('should report only the moved assets when some could not be moved', async () => {
       vitest
-        .mocked(addAssetsToAlbum)
+        .mocked(moveToAlbum)
         .mockResolvedValue([
-          failed('asset-1', BulkIdErrorReason.Duplicate),
-          failed('asset-2', BulkIdErrorReason.Duplicate),
+          succeeded('asset-1'),
+          failed('asset-2', BulkIdErrorReason.NotFound),
+          failed('asset-3', BulkIdErrorReason.NoPermission),
         ]);
-      vitest.mocked(removeAssetFromAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
+      const movedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2', 'asset-3']);
 
-      expect(removedIds).toEqual(['asset-1', 'asset-2']);
-      expect(removeAssetFromAlbum).toHaveBeenCalledWith({ id: 'source', bulkIdsDto: { ids: ['asset-1', 'asset-2'] } });
-      expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 2 } });
-      expect(toastManager.warning).not.toHaveBeenCalled();
-    });
-
-    it('should keep assets that could not be added in the source album', async () => {
-      vitest
-        .mocked(addAssetsToAlbum)
-        .mockResolvedValue([succeeded('asset-1'), failed('asset-2', BulkIdErrorReason.NoPermission)]);
-      vitest.mocked(removeAssetFromAlbum).mockResolvedValue([succeeded('asset-1')]);
-
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
-
-      expect(removedIds).toEqual(['asset-1']);
-      expect(removeAssetFromAlbum).toHaveBeenCalledWith({ id: 'source', bulkIdsDto: { ids: ['asset-1'] } });
+      expect(movedIds).toEqual(['asset-1']);
       expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 1 } });
-      expect(toastManager.warning).not.toHaveBeenCalled();
-    });
-
-    it('should report only the assets removed from the source album as moved', async () => {
-      vitest.mocked(addAssetsToAlbum).mockResolvedValue([succeeded('asset-1'), succeeded('asset-2')]);
-      vitest
-        .mocked(removeAssetFromAlbum)
-        .mockResolvedValue([succeeded('asset-1'), failed('asset-2', BulkIdErrorReason.NoPermission)]);
-
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
-
-      expect(removedIds).toEqual(['asset-1']);
-      expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 1 } });
-      expect($t).toHaveBeenCalledWith('assets_cannot_be_removed_from_album_count', { values: { count: 1 } });
+      expect($t).toHaveBeenCalledWith('assets_cannot_be_moved_to_album_count', { values: { count: 2 } });
       expect(toastManager.primary).toHaveBeenCalledTimes(1);
-      expect(toastManager.warning).toHaveBeenCalledWith('formatter');
+      expect(toastManager.warning).toHaveBeenCalledExactlyOnceWith('assets_cannot_be_moved_to_album_count');
     });
 
-    it('should not report a move when nothing could be removed from the source album', async () => {
-      vitest.mocked(addAssetsToAlbum).mockResolvedValue([succeeded('asset-1')]);
-      vitest.mocked(removeAssetFromAlbum).mockResolvedValue([failed('asset-1', BulkIdErrorReason.NoPermission)]);
+    it('should count assets already in the target album as moved', async () => {
+      vitest.mocked(moveToAlbum).mockResolvedValue([succeeded('new-in-target'), succeeded('already-in-target')]);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1']);
+      const movedIds = await moveAssetsToAlbum('source', 'destination', ['new-in-target', 'already-in-target']);
 
-      expect(removedIds).toEqual([]);
-      expect($t).toHaveBeenCalledWith('assets_cannot_be_removed_from_album_count', { values: { count: 1 } });
-      expect(toastManager.primary).not.toHaveBeenCalled();
-      expect(toastManager.warning).toHaveBeenCalledWith('formatter');
+      expect(movedIds).toEqual(['new-in-target', 'already-in-target']);
+      expect($t).toHaveBeenCalledWith('assets_moved_to_album_count', { values: { count: 2 } });
+      expect(toastManager.primary).toHaveBeenCalledTimes(1);
+      expect(toastManager.warning).not.toHaveBeenCalled();
     });
 
-    it('should not remove anything when no asset could be added', async () => {
+    it('should not report a move when nothing could be moved', async () => {
       vitest
-        .mocked(addAssetsToAlbum)
+        .mocked(moveToAlbum)
         .mockResolvedValue([
           failed('asset-1', BulkIdErrorReason.NoPermission),
           failed('asset-2', BulkIdErrorReason.NotFound),
         ]);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
+      const movedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
 
-      expect(removedIds).toEqual([]);
-      expect(removeAssetFromAlbum).not.toHaveBeenCalled();
-      expect($t).toHaveBeenCalledWith('assets_cannot_be_added_to_album_count', { values: { count: 2 } });
+      expect(movedIds).toEqual([]);
+      expect($t).toHaveBeenCalledWith('assets_cannot_be_moved_to_album_count', { values: { count: 2 } });
       expect(toastManager.primary).not.toHaveBeenCalled();
-      expect(toastManager.warning).toHaveBeenCalledWith('formatter');
+      expect(toastManager.warning).toHaveBeenCalledExactlyOnceWith('assets_cannot_be_moved_to_album_count');
     });
 
-    it('should not remove anything when the add request fails', async () => {
+    it('should not return any ids when the request fails', async () => {
       const error = new Error('Network error');
-      vitest.mocked(addAssetsToAlbum).mockRejectedValue(error);
+      vitest.mocked(moveToAlbum).mockRejectedValue(error);
 
-      const removedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
+      const movedIds = await moveAssetsToAlbum('source', 'destination', ['asset-1', 'asset-2']);
 
-      expect(removedIds).toEqual([]);
-      expect(removeAssetFromAlbum).not.toHaveBeenCalled();
-      expect(handleError).toHaveBeenCalledWith(error, 'formatter');
+      expect(movedIds).toEqual([]);
+      expect(handleError).toHaveBeenCalledExactlyOnceWith(error, 'errors.error_moving_assets_to_album');
       expect(toastManager.primary).not.toHaveBeenCalled();
+      expect(toastManager.warning).not.toHaveBeenCalled();
     });
   });
 });

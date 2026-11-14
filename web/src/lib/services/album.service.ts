@@ -5,7 +5,7 @@ import {
   AlbumUserRole,
   BulkIdErrorReason,
   deleteAlbum,
-  removeAssetFromAlbum,
+  moveAssetsToAlbum as moveToAlbum,
   removeUserFromAlbum,
   updateAlbumInfo,
   updateAlbumUser,
@@ -97,35 +97,28 @@ export const moveAssetsToAlbum = async (sourceAlbumId: string, destAlbumId: stri
   const $t = await getFormatter();
 
   try {
-    const addResults = await addToAlbum({ ...authManager.params, id: destAlbumId, bulkIdsDto: { ids: assetIds } });
-    const idsInDestination = addResults
-      .filter(({ success, error }) => success || error === BulkIdErrorReason.Duplicate)
-      .map(({ id }) => id);
+    const results = await moveToAlbum({
+      id: sourceAlbumId,
+      albumMoveAssetsDto: { targetAlbumId: destAlbumId, assetIds },
+    });
+    const movedIds = results.filter(({ success }) => success).map(({ id }) => id);
+    const notMovedCount = assetIds.length - movedIds.length;
 
-    if (idsInDestination.length === 0) {
-      toastManager.warning($t('assets_cannot_be_added_to_album_count', { values: { count: assetIds.length } }));
-      return [];
-    }
-
-    const removeResults = await removeAssetFromAlbum({ id: sourceAlbumId, bulkIdsDto: { ids: idsInDestination } });
-    const removedIds = removeResults.filter(({ success }) => success).map(({ id }) => id);
-    const notRemovedCount = idsInDestination.length - removedIds.length;
-
-    if (removedIds.length > 0) {
+    if (movedIds.length > 0) {
       toastManager.primary(
         {
-          description: $t('assets_moved_to_album_count', { values: { count: removedIds.length } }),
+          description: $t('assets_moved_to_album_count', { values: { count: movedIds.length } }),
           button: { label: $t('view_album'), onclick: () => goto(Route.viewAlbum({ id: destAlbumId })) },
         },
         { timeout: 5000 },
       );
     }
 
-    if (notRemovedCount > 0) {
-      toastManager.warning($t('assets_cannot_be_removed_from_album_count', { values: { count: notRemovedCount } }));
+    if (notMovedCount > 0) {
+      toastManager.warning($t('assets_cannot_be_moved_to_album_count', { values: { count: notMovedCount } }));
     }
 
-    return removedIds;
+    return movedIds;
   } catch (error) {
     handleError(error, $t('errors.error_moving_assets_to_album'));
     return [];
