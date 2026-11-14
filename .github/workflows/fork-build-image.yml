@@ -75,7 +75,7 @@ jobs:
           tags=("$ref_tag" "${source_commit::7}")
           publish_latest=false
           if [[ "$source_ref" == "$DEFAULT_BRANCH" ]]; then
-            publish_latest=true
+            tags+=(edge)
           fi
           if [[ "$source_ref" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
             tags+=("${BASH_REMATCH[1]}")
