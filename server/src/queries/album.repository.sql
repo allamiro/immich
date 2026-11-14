@@ -302,6 +302,21 @@ from
   ) as "dummy"
 on conflict do nothing
 
+-- AlbumRepository.moveAssetIds
+begin
+insert into
+  "album_asset"
+select
+  $1::uuid as "albumId",
+  unnest($2::uuid[]) as "assetId"
+from
+  (
+    select
+      1
+  ) as "dummy"
+on conflict do nothing
+rollback
+
 -- AlbumRepository.create
 with
   "album" as (
