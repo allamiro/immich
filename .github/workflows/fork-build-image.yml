@@ -422,3 +422,73 @@ jobs:
             echo "Verify: \`gh attestation verify oci://${IMAGE}@${DIGEST} -R ${REPOSITORY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  release:
+    name: Publish the GitHub release
+    needs: [resolve-source, merge-manifest, verify]
+    if: ${{ github.repository_owner != 'immich-app' && needs.resolve-source.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      TAG: ${{ needs.resolve-source.outputs.source-ref }}
+      BASE: ${{ needs.resolve-source.outputs.base }}
+      UPSTREAM_BASE_COMMIT: ${{ needs.resolve-source.outputs.upstream-base-commit }}
+      SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
+      PREVIOUS_TAG: ${{ needs.resolve-source.outputs.previous-tag }}
+      PRERELEASE: ${{ needs.resolve-source.outputs.prerelease }}
+      LATEST: ${{ needs.resolve-source.outputs.latest }}
+      IMAGE: ${{ needs.resolve-source.outputs.image }}
+      DIGEST: ${{ needs.merge-manifest.outputs.digest }}
+      DOCS_URL: ${{ needs.resolve-source.outputs.docs-url }}
+      SERVER_URL: ${{ github.server_url }}
+    steps:
+      - name: Checkout fork tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tools
+          sparse-checkout: .github/fork
+          persist-credentials: false
+
+      - name: Compare migrations with upstream
+        id: migrations
+        run: |
+          changes=unknown
+          if comparison=$(gh api "repos/${REPOSITORY}/compare/${UPSTREAM_BASE_COMMIT}...${SOURCE_COMMIT}" \
+            --jq '{count: (.files | length), files: [.files[].filename]}'); then
+            # The compare API lists at most 300 files.
+            if [[ $(jq .count <<< "$comparison") -lt 300 ]]; then
+              changes=$(jq -r '.files[] | select(startswith("server/src/schema/migrations/"))' <<< "$comparison")
+            fi
+          fi
+          if [[ "$changes" == unknown ]]; then
+            echo "::warning::Could not list the files that differ from upstream ${BASE}; the notes say so."
+          fi
+          {
+            echo 'changes<<FORK_MIGRATIONS'
+            echo "$changes"
+            echo 'FORK_MIGRATIONS'
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        env:
+          MIGRATION_CHANGES: ${{ steps.migrations.outputs.changes }}
+        run: |
+          tools/.github/fork/release-notes.sh > "${RUNNER_TEMP}/release-notes.md"
+          cat "${RUNNER_TEMP}/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create or update the release
+        run: |
+          title="${TAG} (unofficial fork build)"
+          notes="${RUNNER_TEMP}/release-notes.md"
+          if gh release view "$TAG" --repo "$REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPOSITORY" --title "$title" --notes-file "$notes" \
+              --prerelease="$PRERELEASE" --latest="$LATEST"
+          else
+            gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$title" --notes-file "$notes" \
+              --prerelease="$PRERELEASE" --latest="$LATEST"
+          fi
+          gh release view "$TAG" --repo "$REPOSITORY" --json url,isPrerelease,name \
+            --jq '"\(.name): \(.url) (prerelease: \(.isPrerelease))"'
