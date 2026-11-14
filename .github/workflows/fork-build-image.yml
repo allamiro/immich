@@ -1,8 +1,10 @@
 name: Fork Build Image
 
-# The build metadata that server/Dockerfile bakes in is rewritten before the build so the image names
-# this repository. The helper scripts in .github/fork are taken from the workflow's own commit, so
-# any branch or tag can be built, including upstream-based release branches that do not contain them.
+# Builds ghcr.io/<owner>/immich-server-allamiro from this fork. Every image names this repository as
+# its source: the build metadata that server/Dockerfile bakes in is rewritten before the build and
+# the image carries the fork's OCI labels. The helper scripts in .github/fork are taken from
+# the workflow's own commit, so any branch or tag can be built, including upstream-based release
+# branches that do not contain them.
 
 on:
   workflow_dispatch:
@@ -13,7 +15,7 @@ on:
         type: string
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*-fork.*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name }}
@@ -24,6 +26,11 @@ permissions: {}
 defaults:
   run:
     shell: bash
+
+env:
+  UPSTREAM_REPOSITORY: immich-app/immich
+  UPSTREAM_BRANCH: main
+  PLATFORMS: linux/amd64 linux/arm64
 
 jobs:
   resolve-source:
@@ -43,6 +50,7 @@ jobs:
       contents: read
     outputs:
       image: ${{ steps.source.outputs.image }}
+      package: ${{ steps.source.outputs.package }}
       cache-image: ${{ steps.source.outputs.cache-image }}
       cache-scope: ${{ steps.source.outputs.cache-scope }}
       default-branch-cache-scope: ${{ steps.source.outputs.default-branch-cache-scope }}
@@ -50,58 +58,101 @@ jobs:
       source-commit: ${{ steps.source.outputs.source-commit }}
       build-image: ${{ steps.source.outputs.build-image }}
       tags: ${{ steps.source.outputs.tags }}
+      release: ${{ steps.source.outputs.release }}
+      prerelease: ${{ steps.source.outputs.prerelease }}
+      latest: ${{ steps.source.outputs.latest }}
+      previous-tag: ${{ steps.source.outputs.previous-tag }}
+      base: ${{ steps.source.outputs.base }}
+      docs-url: ${{ steps.source.outputs.docs-url }}
+      labels: ${{ steps.source.outputs.labels }}
+      upstream-base-commit: ${{ steps.upstream-release.outputs.commit }}
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
+          path: source
           persist-credentials: false
 
-      - name: Resolve image name, source and tags
+      - name: Checkout fork tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tools
+          sparse-checkout: .github/fork
+          persist-credentials: false
+
+      - name: Resolve image name, source, tags and labels
         id: source
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_REF: ${{ inputs.ref }}
           TRIGGER_REF_NAME: ${{ github.ref_name }}
+          TRIGGER_REF_TYPE: ${{ github.ref_type }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          WORKFLOW_COMMIT: ${{ github.workflow_sha }}
         run: |
-          sanitize_tag() {
-            sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^[.-]+//' <<< "$1" | cut -c 1-128
-          }
-
           source_ref="${REQUESTED_REF:-$TRIGGER_REF_NAME}"
+          requested_as_tag=false
+          if [[ "$source_ref" == refs/tags/* ]] || [[ -z "$REQUESTED_REF" && "$TRIGGER_REF_TYPE" == tag ]]; then
+            requested_as_tag=true
+          fi
           source_ref="${source_ref#refs/heads/}"
           source_ref="${source_ref#refs/tags/}"
-          source_commit=$(git rev-parse HEAD)
-          ref_tag=$(sanitize_tag "$source_ref")
-          image="ghcr.io/${OWNER,,}/immich-server-allamiro"
+          source_commit=$(git -C source rev-parse HEAD)
 
-          tags=("$ref_tag" "${source_commit::7}")
-          publish_latest=false
-          if [[ "$source_ref" == "$DEFAULT_BRANCH" ]]; then
-            tags+=(edge)
-          fi
-          if [[ "$source_ref" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
-            tags+=("${BASH_REMATCH[1]}")
-            if [[ "$source_ref" =~ -fork\.[0-9]+$ ]]; then
-              publish_latest=true
+          all_tags=$(gh api "repos/${REPOSITORY}/git/matching-refs/tags/" --paginate --jq '.[].ref | sub("^refs/tags/"; "")')
+          is_tag=false
+          if [[ "$requested_as_tag" == true ]] || grep -qxF "$source_ref" <<< "$all_tags"; then
+            is_tag=true
+            tag_commit=$(gh api "repos/${REPOSITORY}/commits/refs/tags/${source_ref}" --jq .sha)
+            if [[ "$tag_commit" != "$source_commit" ]]; then
+              echo "::error::Tag ${source_ref} points at ${tag_commit}, but the checkout is ${source_commit}."
+              exit 1
             fi
           fi
-          if [[ "$publish_latest" == true ]]; then
-            tags+=(latest)
-          fi
-          unique_tags=$(printf '%s\n' "${tags[@]}" | awk 'NF && !seen[$0]++' | paste -sd ' ' -)
 
-          {
-            echo "image=${image}"
-            echo "cache-image=${image}-build-cache"
-            echo "cache-scope=${ref_tag}"
-            echo "default-branch-cache-scope=$(sanitize_tag "$DEFAULT_BRANCH")"
-            echo "source-ref=${source_ref}"
-            echo "source-commit=${source_commit}"
-            echo "build-image=${ref_tag}"
-            echo "tags=${unique_tags}"
-          } | tee -a "$GITHUB_OUTPUT"
+          upstream_main_base=''
+          if [[ "$is_tag" != true ]]; then
+            upstream_main_base=$(gh api "repos/${REPOSITORY}/compare/${UPSTREAM_REPOSITORY%%/*}:${UPSTREAM_BRANCH}...${source_commit}" \
+              --jq .merge_base_commit.sha) || {
+              echo "::warning::Could not compute the merge base with upstream ${UPSTREAM_BRANCH}; the base label reads upstream-main."
+              upstream_main_base=''
+            }
+          fi
+
+          fork_doc_in_source=false
+          if [[ -f source/FORK.md ]]; then
+            fork_doc_in_source=true
+          fi
+
+          SOURCE_REF="$source_ref" SOURCE_COMMIT="$source_commit" IS_TAG="$is_tag" \
+            PACKAGE_VERSION="$(jq -r '.version // empty' source/server/package.json)" \
+            FORK_TAGS="$all_tags" UPSTREAM_MAIN_BASE="$upstream_main_base" FORK_DOC_IN_SOURCE="$fork_doc_in_source" \
+            tools/.github/fork/resolve-image-source.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check the upstream release the tag is based on
+        id: upstream-release
+        if: ${{ steps.source.outputs.release == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE: ${{ steps.source.outputs.base }}
+          SOURCE_REF: ${{ steps.source.outputs.source-ref }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source-commit }}
+        run: |
+          if ! upstream_commit=$(gh api "repos/${UPSTREAM_REPOSITORY}/commits/refs/tags/${BASE}" --jq .sha); then
+            echo "::error::${SOURCE_REF} names upstream ${BASE} as its base, but ${UPSTREAM_REPOSITORY} has no tag ${BASE}."
+            exit 1
+          fi
+          status=$(gh api "repos/${REPOSITORY}/compare/${upstream_commit}...${SOURCE_COMMIT}" --jq .status)
+          if [[ "$status" != ahead && "$status" != identical ]]; then
+            echo "::error::${SOURCE_REF} (${SOURCE_COMMIT}) does not contain upstream ${BASE} (${upstream_commit}); compare status '${status}'."
+            exit 1
+          fi
+          echo "commit=${upstream_commit}" | tee -a "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.platform }}
@@ -145,8 +196,9 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
+          PACKAGE: ${{ needs.resolve-source.outputs.package }}
           FORK_SERVER_URL: ${{ github.server_url }}
-        run: tools/.github/fork/rebrand-dockerfile.sh source/server/Dockerfile "$REPOSITORY" "$RUN_ID" "$SOURCE_COMMIT" "${IMAGE##*/}"
+        run: tools/.github/fork/rebrand-dockerfile.sh source/server/Dockerfile "$REPOSITORY" "$RUN_ID" "$SOURCE_COMMIT" "$PACKAGE"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
@@ -166,11 +218,7 @@ jobs:
           file: source/server/Dockerfile
           platforms: ${{ matrix.platform }}
           outputs: type=image,"name=${{ env.IMAGE }}",push-by-digest=true,name-canonical=true,push=true
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ needs.resolve-source.outputs.source-commit }}
-            org.opencontainers.image.version=${{ needs.resolve-source.outputs.build-image }}
+          labels: ${{ needs.resolve-source.outputs.labels }}
           cache-from: |
             type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.platform-pair }}-${{ needs.resolve-source.outputs.cache-scope }}
             type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.platform-pair }}-${{ needs.resolve-source.outputs.default-branch-cache-scope }}
@@ -204,9 +252,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     env:
       IMAGE: ${{ needs.resolve-source.outputs.image }}
       TAGS: ${{ needs.resolve-source.outputs.tags }}
+      LABELS: ${{ needs.resolve-source.outputs.labels }}
+      SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
     steps:
       - name: Download digests
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -228,32 +280,31 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         run: |
-          tag_arguments=()
+          arguments=()
           for tag in ${TAGS}; do
-            tag_arguments+=(--tag "${IMAGE}:${tag}")
+            arguments+=(--tag "${IMAGE}:${tag}")
           done
+          while IFS= read -r label; do
+            if [[ -n "$label" ]]; then
+              arguments+=(--annotation "index:${label}")
+            fi
+          done <<< "$LABELS"
 
           sources=()
           for digest in *; do
             sources+=("${IMAGE}@sha256:${digest}")
           done
 
-          docker buildx imagetools create "${tag_arguments[@]}" "${sources[@]}"
+          docker buildx imagetools create "${arguments[@]}" "${sources[@]}"
 
-      - name: Inspect manifest and summarize
-        env:
-          SOURCE_REF: ${{ needs.resolve-source.outputs.source-ref }}
-          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
+      - name: Read the manifest list digest
+        id: digest
         run: |
-          first_tag="${TAGS%% *}"
-          docker buildx imagetools inspect "${IMAGE}:${first_tag}"
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${SOURCE_COMMIT::7}" --format '{{json .Manifest}}' | jq -r .digest)
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not read the digest of ${IMAGE}:${SOURCE_COMMIT::7}."
+            exit 1
+          fi
+          docker buildx imagetools inspect "${IMAGE}@${digest}"
+          echo "digest=${digest}" | tee -a "$GITHUB_OUTPUT"
 
-          {
-            echo "### ${IMAGE}"
-            echo
-            echo "Source: \`${SOURCE_REF}\` at \`${SOURCE_COMMIT}\`"
-            echo
-            for tag in ${TAGS}; do
-              echo "- \`${IMAGE}:${tag}\`"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
