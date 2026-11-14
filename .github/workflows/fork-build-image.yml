@@ -1,8 +1,9 @@
 name: Fork Build Image
 
 # Builds ghcr.io/<owner>/immich-server-allamiro from this fork. Every image names this repository as
-# its source: the build metadata that server/Dockerfile bakes in is rewritten before the build and
-# the image carries the fork's OCI labels. The helper scripts in .github/fork are taken from
+# its source: the build metadata that server/Dockerfile bakes in is rewritten before the build, the
+# image carries the fork's OCI labels, provenance and SBOM, and a GitHub attestation ties the
+# published digest to this workflow and commit. The helper scripts in .github/fork are taken from
 # the workflow's own commit, so any branch or tag can be built, including upstream-based release
 # branches that do not contain them.
 
@@ -219,6 +220,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,"name=${{ env.IMAGE }}",push-by-digest=true,name-canonical=true,push=true
           labels: ${{ needs.resolve-source.outputs.labels }}
+          provenance: mode=max
+          sbom: true
           cache-from: |
             type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.platform-pair }}-${{ needs.resolve-source.outputs.cache-scope }}
             type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.platform-pair }}-${{ needs.resolve-source.outputs.default-branch-cache-scope }}
@@ -307,4 +310,29 @@ jobs:
           fi
           docker buildx imagetools inspect "${IMAGE}@${digest}"
           echo "digest=${digest}" | tee -a "$GITHUB_OUTPUT"
+
+  attest:
+    name: Attest build provenance
+    needs: [resolve-source, merge-manifest]
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest the manifest list
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ needs.resolve-source.outputs.image }}
+          subject-digest: ${{ needs.merge-manifest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
