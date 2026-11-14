@@ -1,0 +1,240 @@
+name: Fork Mutation Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which album service to mutate
+        type: choice
+        options:
+          - both
+          - web
+          - server
+        default: both
+      full:
+        description: Ignore the cached incremental results and run every mutant
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      target:
+        description: Which album service to mutate (web, server or both)
+        type: string
+        default: both
+      full:
+        description: Ignore the cached incremental results and run every mutant
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'web/src/lib/services/album.service.ts'
+      - 'web/src/lib/services/album.service.spec.ts'
+      - 'web/src/lib/modals/AssetMoveToAlbumModal.svelte'
+      - 'web/src/lib/modals/AlbumPickerModal.svelte'
+      - 'server/src/services/album.service.ts'
+      - 'server/src/services/album.service.spec.ts'
+      - '.github/mutation/**'
+      - '.github/workflows/fork-mutation-test.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.target || 'both' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  STRYKER_VERSION: 10.1.1
+
+jobs:
+  select-targets:
+    name: Select targets
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      targets: ${{ steps.select.outputs.targets }}
+    steps:
+      - name: Select the requested targets
+        id: select
+        env:
+          REQUESTED_TARGET: ${{ inputs.target || 'both' }}
+          WEB_TARGET: '{"target":"web","directory":"web","functions":"moveAssetsToAlbum","setup-tasks":"//:sdk:install //:sdk:build //web:install //web:playwright-install"}'
+          SERVER_TARGET: '{"target":"server","directory":"server","functions":"moveAssets","setup-tasks":"//server:install //:plugins"}'
+        run: |
+          case "$REQUESTED_TARGET" in
+            both) targets="[${WEB_TARGET},${SERVER_TARGET}]" ;;
+            web) targets="[${WEB_TARGET}]" ;;
+            server) targets="[${SERVER_TARGET}]" ;;
+            *)
+              echo "::error::target must be web, server or both, got '${REQUESTED_TARGET}'."
+              exit 1
+              ;;
+          esac
+          echo "targets=${targets}" | tee -a "$GITHUB_OUTPUT"
+
+  mutation-test:
+    name: Mutation test ${{ matrix.target }}
+    needs: select-targets
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select-targets.outputs.targets) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      TARGET_DIRECTORY: ${{ matrix.directory }}
+      MUTATED_FUNCTIONS: ${{ matrix.functions }}
+      STRYKER_CONFIG_PATH: .github/mutation/stryker.${{ matrix.target }}.config.json
+      INCREMENTAL_FILE: ${{ matrix.directory }}/reports/stryker-incremental.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the mutation scope
+        id: scope
+        working-directory: ${{ matrix.directory }}
+        run: |
+          stryker_config="${GITHUB_WORKSPACE}/${STRYKER_CONFIG_PATH}"
+          mutated_file=$(jq -r '.mutate[0]' "$stryker_config")
+          test_file=$(jq -r '.testFiles[0]' "$stryker_config")
+          for required_file in "$mutated_file" "$test_file"; do
+            if [[ ! -f "$required_file" ]]; then
+              echo "::error::${TARGET_DIRECTORY}/${required_file} does not exist on this ref."
+              exit 1
+            fi
+          done
+
+          ranges=()
+          for function_name in ${MUTATED_FUNCTIONS}; do
+            if ! line_range=$(awk -v name="$function_name" '
+              !first_line && $0 ~ "^[ \t]*(export[ \t]+)?((const|async|function)[ \t]+)+" name "[ \t]*[=(<]" {
+                first_line = NR
+                match($0, /^[ \t]*/)
+                indentation = substr($0, 1, RLENGTH)
+                next
+              }
+              first_line && ($0 == indentation "}" || $0 == indentation "};") {
+                print first_line "-" NR
+                closed = 1
+                exit
+              }
+              END { exit closed ? 0 : 1 }
+            ' "$mutated_file"); then
+              echo "::error::${function_name} was not found in ${TARGET_DIRECTORY}/${mutated_file}."
+              exit 1
+            fi
+            ranges+=("${mutated_file}:${line_range}")
+          done
+
+          mutate=$(IFS=,; echo "${ranges[*]}")
+          echo "mutate=${mutate}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Install dependencies
+        env:
+          SETUP_TASKS: ${{ matrix.setup-tasks }}
+        run: |
+          for task in ${SETUP_TASKS}; do
+            mise run "$task"
+          done
+
+      - name: Install Stryker outside the workspace
+        run: |
+          stryker_home="${RUNNER_TEMP}/stryker"
+          mkdir -p "$stryker_home"
+          npm install --prefix "$stryker_home" --no-audit --no-fund --no-package-lock --ignore-scripts --legacy-peer-deps \
+            "@stryker-mutator/core@${STRYKER_VERSION}" \
+            "@stryker-mutator/vitest-runner@${STRYKER_VERSION}" \
+            "@stryker-mutator/typescript-checker@${STRYKER_VERSION}"
+          for peer in vitest typescript; do
+            ln -s "${GITHUB_WORKSPACE}/${TARGET_DIRECTORY}/node_modules/${peer}" "${stryker_home}/node_modules/${peer}"
+          done
+
+      - name: Restore incremental results
+        if: ${{ !inputs.full }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.INCREMENTAL_FILE }}
+          key: fork-mutation-test-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fork-mutation-test-${{ matrix.target }}-
+
+      - name: Run Stryker
+        working-directory: ${{ matrix.directory }}
+        env:
+          FULL_RUN: ${{ inputs.full || false }}
+          MUTATE: ${{ steps.scope.outputs.mutate }}
+        run: |
+          stryker_arguments=(run "${GITHUB_WORKSPACE}/${STRYKER_CONFIG_PATH}" --incremental)
+          if [[ "$FULL_RUN" == true ]]; then
+            stryker_arguments+=(--force)
+          fi
+          if [[ -n "$MUTATE" ]]; then
+            stryker_arguments+=(--mutate "$MUTATE")
+          fi
+          node "${RUNNER_TEMP}/stryker/node_modules/@stryker-mutator/core/bin/stryker.js" "${stryker_arguments[@]}"
+
+      - name: Summarize the mutation score
+        if: ${{ !cancelled() }}
+        working-directory: ${{ matrix.directory }}
+        env:
+          MUTATE: ${{ steps.scope.outputs.mutate }}
+        run: |
+          report=reports/mutation/mutation.json
+          if [[ ! -f "$report" ]]; then
+            echo "### Mutation test: ${TARGET}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Stryker did not produce a report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -r --arg target "$TARGET" --arg scope "${MUTATE:-whole file}" \
+            --slurpfile config "${GITHUB_WORKSPACE}/${STRYKER_CONFIG_PATH}" '
+            [.files | to_entries[] | .key as $file | .value.mutants[] | . + {file: $file}] as $mutants
+            | ($mutants | map(select(.status == "Killed" or .status == "Timeout")) | length) as $detected
+            | ($mutants | map(select(.status == "Survived")) | length) as $survived
+            | ($mutants | map(select(.status == "NoCoverage")) | length) as $uncovered
+            | ($detected + $survived + $uncovered) as $valid
+            | (if $valid == 0 then "n/a" else ((($detected / $valid) * 10000 | round) / 100 | tostring) + " %" end) as $score
+            | "### Mutation test: \($target)",
+              "",
+              "Scope: `\($scope)`",
+              "",
+              "| Mutation score | Detected | Survived | No coverage | Thresholds |",
+              "| --- | --- | --- | --- | --- |",
+              "| \($score) | \($detected) | \($survived) | \($uncovered) | break \($config[0].thresholds.break), low \($config[0].thresholds.low), high \($config[0].thresholds.high) |",
+              "",
+              (if ($survived + $uncovered) == 0 then "No surviving mutants." else "Surviving and uncovered mutants:" end),
+              "",
+              ($mutants[] | select(.status == "Survived" or .status == "NoCoverage")
+                | "- `\(.file):\(.location.start.line)` \(.mutatorName) (\(.status))")
+          ' "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the mutation reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mutation-report-${{ matrix.target }}
+          path: |
+            ${{ matrix.directory }}/reports/mutation/mutation.html
+            ${{ matrix.directory }}/reports/mutation/mutation.json
+          if-no-files-found: warn
+
+      - name: Save incremental results
+        if: ${{ !cancelled() && hashFiles(env.INCREMENTAL_FILE) != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.INCREMENTAL_FILE }}
+          key: fork-mutation-test-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}

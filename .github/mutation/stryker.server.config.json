@@ -1,0 +1,26 @@
+{
+  "checkers": ["typescript"],
+  "coverageAnalysis": "perTest",
+  "htmlReporter": {
+    "fileName": "reports/mutation/mutation.html"
+  },
+  "inPlace": true,
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "mutate": ["src/services/album.service.ts"],
+  "reporters": ["clear-text", "html", "json"],
+  "testFiles": ["src/services/album.service.spec.ts"],
+  "testRunner": "vitest",
+  "thresholds": {
+    "break": 60,
+    "high": 85,
+    "low": 70
+  },
+  "tsconfigFile": "tsconfig.json",
+  "vitest": {
+    "configFile": "test/vitest.config.mjs"
+  }
+}
