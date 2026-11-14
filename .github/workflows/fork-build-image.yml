@@ -336,3 +336,89 @@ jobs:
           push-to-registry: true
           create-storage-record: false
 
+  verify:
+    name: Verify the published image
+    needs: [resolve-source, merge-manifest, attest]
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      IMAGE: ${{ needs.resolve-source.outputs.image }}
+      DIGEST: ${{ needs.merge-manifest.outputs.digest }}
+      TAGS: ${{ needs.resolve-source.outputs.tags }}
+      SOURCE_REF: ${{ needs.resolve-source.outputs.source-ref }}
+      SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
+    steps:
+      - name: Checkout fork tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tools
+          sparse-checkout: .github/fork
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check metadata, labels, attestations and tags
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_COMMIT: ${{ needs.resolve-source.outputs.source-commit }}
+          EXPECTED_BUILD_IMAGE: ${{ needs.resolve-source.outputs.build-image }}
+          EXPECTED_PACKAGE: ${{ needs.resolve-source.outputs.package }}
+          EXPECTED_LABELS: ${{ needs.resolve-source.outputs.labels }}
+          EXPECTED_TAGS: ${{ needs.resolve-source.outputs.tags }}
+          EXPECTED_LATEST: ${{ needs.resolve-source.outputs.latest }}
+          EXPECTED_PLATFORMS: ${{ env.PLATFORMS }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+          SERVER_URL: ${{ github.server_url }}
+        run: tools/.github/fork/verify-image.sh "$IMAGE" "$DIGEST"
+
+      # The signed attestation names the commit the workflow ran on (github.sha). A build of another
+      # ref started by workflow_dispatch records the built commit in the image's revision label and
+      # in the buildx provenance, which the previous step checked.
+      - name: Verify the provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_COMMIT: ${{ github.sha }}
+        run: |
+          gh attestation verify "oci://${IMAGE}@${DIGEST}" -R "$REPOSITORY" \
+            --signer-workflow "${REPOSITORY}/.github/workflows/fork-build-image.yml" \
+            --source-digest "$WORKFLOW_RUN_COMMIT" --format json > "${RUNNER_TEMP}/attestation.json"
+          jq -r '.[].verificationResult.signature.certificate |
+            "Verified: signed by \(.buildSignerURI) for \(.sourceRepositoryURI) at \(.sourceRepositoryDigest) (\(.sourceRepositoryRef))"' \
+            "${RUNNER_TEMP}/attestation.json"
+          jq -r '.[].verificationResult.statement.subject[] | "Subject: \(.name)@sha256:\(.digest.sha256)"' "${RUNNER_TEMP}/attestation.json"
+
+      - name: Summarize
+        env:
+          BASE: ${{ needs.resolve-source.outputs.base }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          {
+            echo "### ${IMAGE}"
+            echo
+            echo "Unofficial fork build of \`${SOURCE_REF}\` at \`${SOURCE_COMMIT}\`, base \`${BASE}\`."
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            for tag in ${TAGS}; do
+              echo "- \`${IMAGE}:${tag}\`"
+            done
+            echo
+            echo "Verify: \`gh attestation verify oci://${IMAGE}@${DIGEST} -R ${REPOSITORY}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
