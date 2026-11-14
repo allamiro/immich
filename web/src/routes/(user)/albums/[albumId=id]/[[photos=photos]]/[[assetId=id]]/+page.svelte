@@ -163,13 +163,17 @@
     await refreshAlbum();
   };
 
-  const onAlbumRemoveAssets = async ({ assetIds, albumId }: { assetIds: string[]; albumId: string }) => {
-    if (albumId !== album.id) {
+  const handleMoveToAlbum = async () => {
+    const removedAssetIds = await modalManager.show(AssetMoveToAlbumModal, {
+      assetIds: assetMultiSelectManager.assets.map(({ id }) => id),
+      sourceAlbum: album,
+    });
+    if (!removedAssetIds || removedAssetIds.length === 0) {
       return;
     }
-    timelineManager.removeAssets(assetIds);
+
     assetMultiSelectManager.clear();
-    await refreshAlbum();
+    await handleRemoveAssets(removedAssetIds);
   };
 
   const handleUndoRemoveAssets = async (assets: TimelineAsset[]) => {
@@ -341,7 +345,6 @@
   onSharedLinkDelete={refreshAlbum}
   {onAlbumDelete}
   {onAlbumAddAssets}
-  {onAlbumRemoveAssets}
   {onAlbumShare}
   {onAlbumUserUpdate}
   onAlbumUserDelete={refreshAlbum}
@@ -502,15 +505,7 @@
           {/if}
 
           {#if isOwned || assetMultiSelectManager.isAllUserOwned}
-            <MenuOption
-              text={$t('move_to_album')}
-              icon={mdiTransferRight}
-              onClick={() =>
-                modalManager.show(AssetMoveToAlbumModal, {
-                  assetIds: assetMultiSelectManager.assets.map(({ id }) => id),
-                  sourceAlbum: album,
-                })}
-            />
+            <MenuOption text={$t('move_to_album')} icon={mdiTransferRight} onClick={handleMoveToAlbum} />
             <RemoveFromAlbum menuItem bind:album onRemove={handleRemoveAssets} />
           {/if}
           {#if assetMultiSelectManager.isAllUserOwned}

@@ -7,20 +7,24 @@
   type Props = {
     assetIds: string[];
     sourceAlbum: AlbumResponseDto;
-    onClose: () => void;
+    onClose: (removedAssetIds?: string[]) => void;
   };
 
   const { assetIds, sourceAlbum, onClose }: Props = $props();
 
   const handleClose = async (albums?: AlbumResponseDto[]) => {
-    const dest = albums?.[0];
-    if (!dest) {
+    const [destinationAlbum] = albums ?? [];
+    if (!destinationAlbum) {
       onClose();
       return;
     }
-    await moveAssetsToAlbum(sourceAlbum.id, dest.id, assetIds);
-    onClose();
+    onClose(await moveAssetsToAlbum(sourceAlbum.id, destinationAlbum.id, assetIds));
   };
 </script>
 
-<AlbumPickerModal onClose={handleClose} title={$t('move_to_album')} excludedAlbumIds={[sourceAlbum.id]} />
+<AlbumPickerModal
+  onClose={handleClose}
+  title={$t('move_to_album')}
+  excludedAlbumIds={[sourceAlbum.id]}
+  multiple={false}
+/>

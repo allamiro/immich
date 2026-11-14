@@ -25,9 +25,10 @@
     onClose: (albums?: AlbumResponseDto[]) => void;
     excludedAlbumIds?: string[];
     title?: string;
+    multiple?: boolean;
   };
 
-  let { onClose, excludedAlbumIds = [], title }: Props = $props();
+  let { onClose, excludedAlbumIds = [], title, multiple = true }: Props = $props();
 
   onMount(async () => {
     const all = await getAllAlbums({});
@@ -64,6 +65,10 @@
   };
 
   const handleMultiSelect = (album?: AlbumResponseDto) => {
+    if (!multiple) {
+      return;
+    }
+
     const selectedAlbum = album ?? albumModalRows.find(({ selected }) => selected)?.album;
 
     if (!selectedAlbum) {
@@ -191,7 +196,7 @@
                 multiSelected={row.multiSelected}
                 searchQuery={search}
                 onAlbumClick={() => handleAlbumClick(row.album)}
-                onMultiSelect={() => handleMultiSelect(row.album)}
+                onMultiSelect={multiple ? () => handleMultiSelect(row.album) : undefined}
               />
             {/if}
           {/each}
@@ -213,12 +218,14 @@
           </span>
           <Text size="tiny">{$t('to_select')}</Text>
         </div>
-        <div class="flex place-items-center gap-1">
-          <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
-            <Text size="tiny">CTRL</Text>
-          </span>
-          <Text size="tiny">{$t('to_multi_select')}</Text>
-        </div>
+        {#if multiple}
+          <div class="flex place-items-center gap-1">
+            <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
+              <Text size="tiny">CTRL</Text>
+            </span>
+            <Text size="tiny">{$t('to_multi_select')}</Text>
+          </div>
+        {/if}
       </div>
     </div>
   </ModalFooter>
