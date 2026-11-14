@@ -15,15 +15,20 @@ IMMICH_TEAM_ID = 2W7AC6T8T5
 
 // Root bundle identifier for the Release configuration.
 // Extension suffixes (`.ShareExtension`/`.Widget`) will be appended
-IMMICH_BUNDLE_ID_PROD = app.alextran.immich
+IMMICH_BUNDLE_ID_PROD = io.github.allamiro.immichfork
 
 // Root bundle identifier for the Debug and Profile configurations.
 // Build scheme suffixes (`.debug`/`.profile`) will be appended
-IMMICH_BUNDLE_ID_DEV = app.futo.immich
+IMMICH_BUNDLE_ID_DEV = io.github.allamiro.immichforkdev
 
 // Root App Group identifier.
 // Build scheme suffixes (`.debug`/`.profile`) will be appended
-IMMICH_GROUP_ID = group.app.immich.share
+IMMICH_GROUP_ID = group.io.github.allamiro.immichfork
+
+// Home screen name. Debug and Profile builds append their suffix.
+IMMICH_DISPLAY_NAME = Immich Allamiro
+IMMICH_DISPLAY_NAME_SUFFIX[config=Debug] = -Debug
+IMMICH_DISPLAY_NAME_SUFFIX[config=Profile] = -Profile
 
 // Optional per-developer configuration override
 #include? "Signing.local.xcconfig"
