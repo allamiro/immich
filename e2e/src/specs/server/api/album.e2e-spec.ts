@@ -990,6 +990,164 @@ describe('/albums', () => {
       expect(body).toEqual([expect.objectContaining({ id: asset.id, success: true })]);
       expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([target.id]));
     });
+
+    it('should require albumAsset.delete for an API key', async () => {
+      const asset = await utils.createAsset(user1.accessToken);
+      const [source, target, { secret }] = await Promise.all([
+        utils.createAlbum(user1.accessToken, { albumName: 'source', assetIds: [asset.id] }),
+        utils.createAlbum(user1.accessToken, { albumName: 'target' }),
+        utils.createApiKey(user1.accessToken, [Permission.AlbumAssetCreate]),
+      ]);
+
+      const { status, body } = await request(app)
+        .put(`/albums/${source.id}/assets/move`)
+        .set('x-api-key', secret)
+        .send({ targetAlbumId: target.id, assetIds: [asset.id] });
+
+      expect(status).toBe(403);
+      expect(body).toEqual(expect.objectContaining({ message: 'Missing required permission: albumAsset.delete' }));
+      expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([source.id]));
+    });
+
+    it('should not move assets with a shared link', async () => {
+      const asset = await utils.createAsset(user1.accessToken);
+      const [source, target] = await Promise.all([
+        utils.createAlbum(user1.accessToken, { albumName: 'source', assetIds: [asset.id] }),
+        utils.createAlbum(user1.accessToken, { albumName: 'target' }),
+      ]);
+      const sharedLink = await utils.createSharedLink(user1.accessToken, {
+        type: SharedLinkType.Album,
+        albumId: source.id,
+        allowUpload: true,
+      });
+
+      const { status, body } = await request(app)
+        .put(`/albums/${source.id}/assets/move`)
+        .query({ key: sharedLink.key })
+        .send({ targetAlbumId: target.id, assetIds: [asset.id] });
+
+      expect(status).toBe(403);
+      expect(body).toEqual(expect.objectContaining({ message: 'Forbidden' }));
+      expect(await getAlbumIdsForAsset(user1.accessToken, asset.id)).toEqual(new Set([source.id]));
+    });
+
+    describe('compared with adding to the target and removing from the source', () => {
+      type Membership = AlbumUserRole | 'none';
+      type MoveScenario = {
+        name: string;
+        source: Membership;
+        target: Membership;
+        foreignAsset: boolean;
+        inTarget: boolean;
+        trashed: boolean;
+        canMove: boolean;
+      };
+
+      const memberships: Membership[] = [AlbumUserRole.Owner, AlbumUserRole.Editor, AlbumUserRole.Viewer, 'none'];
+      const canEditAssets = (membership: Membership) =>
+        membership === AlbumUserRole.Owner || membership === AlbumUserRole.Editor;
+
+      const scenarios: MoveScenario[] = memberships.flatMap((source) =>
+        memberships.flatMap((target) => {
+          const canEditBoth = canEditAssets(source) && canEditAssets(target);
+          const assetStates = canEditBoth
+            ? [false, true].flatMap((foreignAsset) =>
+                [false, true].flatMap((inTarget) =>
+                  [false, true].map((trashed) => ({ foreignAsset, inTarget, trashed })),
+                ),
+              )
+            : [false, true].map((foreignAsset) => ({ foreignAsset, inTarget: false, trashed: false }));
+
+          return assetStates.map(({ foreignAsset, inTarget, trashed }) => ({
+            name: [
+              `source ${source}`,
+              `target ${target}`,
+              foreignAsset ? 'foreign asset' : 'own asset',
+              ...(inTarget ? ['already in target'] : []),
+              ...(trashed ? ['trashed'] : []),
+            ].join(', '),
+            source,
+            target,
+            foreignAsset,
+            inTarget,
+            trashed,
+            canMove: canEditBoth && (!foreignAsset || !trashed || (source === AlbumUserRole.Owner && inTarget)),
+          }));
+        }),
+      );
+
+      const createAlbumFor = (membership: Membership, albumName: string) =>
+        membership === AlbumUserRole.Owner
+          ? utils.createAlbum(user2.accessToken, { albumName })
+          : utils.createAlbum(user1.accessToken, {
+              albumName,
+              albumUsers: membership === 'none' ? [] : [{ userId: user2.userId, role: membership }],
+            });
+
+      const createFixture = async ({ source, target, foreignAsset, inTarget, trashed }: MoveScenario) => {
+        const assetOwner = foreignAsset ? user1 : user2;
+        const [asset, sourceAlbum, targetAlbum] = await Promise.all([
+          utils.createAsset(assetOwner.accessToken),
+          createAlbumFor(source, 'source'),
+          createAlbumFor(target, 'target'),
+        ]);
+        const albumIds = inTarget ? [sourceAlbum.id, targetAlbum.id] : [sourceAlbum.id];
+        const client = await utils.connectDatabase();
+        await client.query('INSERT INTO "album_asset" ("albumId", "assetId") SELECT unnest($1::uuid[]), $2', [
+          albumIds,
+          asset.id,
+        ]);
+        if (trashed) {
+          await utils.deleteAssets(assetOwner.accessToken, [asset.id]);
+        }
+        return { assetId: asset.id, sourceId: sourceAlbum.id, targetId: targetAlbum.id };
+      };
+
+      const getMembership = async ({ assetId, sourceId, targetId }: Awaited<ReturnType<typeof createFixture>>) => {
+        const client = await utils.connectDatabase();
+        const { rows } = await client.query<{ albumId: string }>(
+          'SELECT "albumId" FROM "album_asset" WHERE "assetId" = $1',
+          [assetId],
+        );
+        const albumIds = new Set(rows.map(({ albumId }) => albumId));
+        return { inSource: albumIds.has(sourceId), inTarget: albumIds.has(targetId) };
+      };
+
+      it.each(scenarios)('$name', async (scenario) => {
+        const [moveFixture, pairFixture] = await Promise.all([createFixture(scenario), createFixture(scenario)]);
+        const moved = { inSource: false, inTarget: true };
+        const unchanged = { inSource: true, inTarget: scenario.inTarget };
+
+        await request(app)
+          .put(`/albums/${pairFixture.targetId}/assets`)
+          .set('Authorization', `Bearer ${user2.accessToken}`)
+          .send({ ids: [pairFixture.assetId] });
+        await request(app)
+          .delete(`/albums/${pairFixture.sourceId}/assets`)
+          .set('Authorization', `Bearer ${user2.accessToken}`)
+          .send({ ids: [pairFixture.assetId] });
+        const pairResult = await getMembership(pairFixture);
+
+        const { status, body } = await request(app)
+          .put(`/albums/${moveFixture.sourceId}/assets/move`)
+          .set('Authorization', `Bearer ${user2.accessToken}`)
+          .send({ targetAlbumId: moveFixture.targetId, assetIds: [moveFixture.assetId] });
+        const moveResult = await getMembership(moveFixture);
+
+        expect(!pairResult.inSource && pairResult.inTarget).toBe(scenario.canMove);
+        expect(moveResult).toEqual(scenario.canMove ? moved : unchanged);
+        if (scenario.canMove) {
+          expect(status).toBe(200);
+          expect(body).toEqual([expect.objectContaining({ id: moveFixture.assetId, success: true })]);
+        } else if (status === 200) {
+          expect(body).toEqual([
+            expect.objectContaining({ id: moveFixture.assetId, success: false, error: 'no_permission' }),
+          ]);
+        } else {
+          expect(status).toBe(400);
+        }
+      });
+    });
   });
 
   describe('PUT :id/users', () => {
