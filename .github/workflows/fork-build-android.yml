@@ -1,0 +1,198 @@
+name: Fork Build Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build. Empty builds the branch the workflow is started from.
+        required: false
+        type: string
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release-tag: ${{ steps.source.outputs.release-tag }}
+      source-commit: ${{ steps.source.outputs.source-commit }}
+      signing: ${{ steps.keystore.outputs.signing }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve source and release tag
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_REF: ${{ inputs.ref }}
+          TRIGGER_REF_NAME: ${{ github.ref_name }}
+        run: |
+          source_ref="${REQUESTED_REF:-$TRIGGER_REF_NAME}"
+          source_ref="${source_ref#refs/heads/}"
+          source_ref="${source_ref#refs/tags/}"
+
+          release_tag=""
+          if [[ "$source_ref" == v* ]] && gh api --silent "repos/${REPOSITORY}/git/ref/tags/${source_ref}" 2> /dev/null; then
+            release_tag="$source_ref"
+          fi
+
+          {
+            echo "source-commit=$(git rev-parse HEAD)"
+            echo "release-tag=${release_tag}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore Rust Cache
+        id: cache-rust-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: fork-build-android-rust-${{ runner.os }}-${{ hashFiles('native/crates/native_core_ffi/rust-toolchain.toml', 'native/Cargo.lock') }}
+          restore-keys: |
+            fork-build-android-rust-${{ runner.os }}-
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./mobile
+
+      - name: Create the Keystore
+        id: keystore
+        env:
+          KEY_JKS: ${{ secrets.KEY_JKS }}
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        working-directory: ./mobile
+        run: |
+          if [[ -n "$KEY_JKS" && -n "$ALIAS" && -n "$ANDROID_KEY_PASSWORD" && -n "$ANDROID_STORE_PASSWORD" ]]; then
+            printf "%s" "$KEY_JKS" | base64 -d > android/key.jks
+            echo "signing=release" | tee -a "$GITHUB_OUTPUT"
+          else
+            rm -f android/key.jks
+            echo "signing=debug" | tee -a "$GITHUB_OUTPUT"
+            echo "::notice::KEY_JKS, ALIAS, ANDROID_KEY_PASSWORD and ANDROID_STORE_PASSWORD are not all set, so the APK is signed with the debug key."
+          fi
+
+      - name: Restore Gradle Cache
+        id: cache-gradle-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/android/.gradle
+          key: fork-build-android-gradle-${{ runner.os }}-${{ hashFiles('mobile/android/**/*.gradle', 'mobile/android/gradle/wrapper/gradle-wrapper.properties', 'mobile/pubspec.lock') }}
+          restore-keys: |
+            fork-build-android-gradle-${{ runner.os }}-
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+        with:
+          packages: ''
+
+      - name: Install dependencies
+        run: mise //mobile:install:ci
+
+      - name: Perform codegen
+        run: mise //mobile:codegen
+
+      - name: Build Android APKs
+        working-directory: ./mobile
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          flutter build apk --release
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+
+      - name: Publish Android Artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: android-apk-${{ steps.keystore.outputs.signing }}-signed
+          path: mobile/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+      - name: Remove the Keystore
+        if: ${{ always() }}
+        run: rm -f mobile/android/key.jks
+
+      - name: Save Gradle Cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: ${{ github.ref_name == github.event.repository.default_branch && steps.cache-gradle-restore.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/android/.gradle
+          key: ${{ steps.cache-gradle-restore.outputs.cache-primary-key }}
+
+      - name: Save Rust Cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: ${{ github.ref_name == github.event.repository.default_branch && steps.cache-rust-restore.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cache-rust-restore.outputs.cache-primary-key }}
+
+  draft-release:
+    name: Attach APKs to draft release
+    needs: build-apk
+    if: ${{ github.repository_owner != 'immich-app' && needs.build-apk.outputs.release-tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPOSITORY: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build-apk.outputs.release-tag }}
+      SOURCE_COMMIT: ${{ needs.build-apk.outputs.source-commit }}
+      SIGNING: ${{ needs.build-apk.outputs.signing }}
+    steps:
+      - name: Download APKs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: android-apk-${{ needs.build-apk.outputs.signing }}-signed
+          path: ${{ runner.temp }}/apk
+
+      - name: Create or update the draft release
+        working-directory: ${{ runner.temp }}/apk
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber ./*.apk
+          else
+            gh release create "$RELEASE_TAG" --repo "$REPOSITORY" --draft --verify-tag \
+              --title "$RELEASE_TAG" \
+              --notes "Android APKs built from ${RELEASE_TAG} at ${SOURCE_COMMIT}. Signing: ${SIGNING} key." \
+              ./*.apk
+          fi

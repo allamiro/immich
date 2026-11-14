@@ -1,0 +1,948 @@
+# Keeps the fork up to date with upstream and proves the fork's "Move to album" feature still works.
+#
+#   1. sync        merges upstream into the default branch (mode merge) or into a sync branch with a pull
+#                  request (mode pr). Conflicts stop the run and are reported in one issue labelled
+#                  upstream-sync-conflict.
+#   2. gate        calls Fork Regression and Fork Mutation Test on the merged commit. Workflows are called
+#                  directly because pushes and pull requests made with GITHUB_TOKEN do not start other
+#                  workflows.
+#   3. gate-report opens or updates one issue labelled feature-regression-failure when the gate is red
+#                  and closes it when the gate is green.
+#   4. release     tags <upstream release>-fork.N and starts the image and Android builds, only when the
+#                  gate is green for the exact commit on the default branch.
+#
+# The gate also runs without a new merge while the regression issue is open or an upstream release is
+# waiting for its fork tag, so a fix pushed by hand closes the issue and releases on the next run.
+#
+# Publishing the merge, in this order:
+#   a. git push with the SYNC_TOKEN secret when it is set, otherwise with GITHUB_TOKEN. GitHub rejects a
+#      GITHUB_TOKEN push when a pushed commit changes .github/workflows, which upstream commits often do.
+#      SYNC_TOKEN is a personal access token with contents and workflows write access to this repository.
+#   b. mode merge only, when the push is rejected for that reason: POST /repos/{owner}/{repo}/merge-upstream
+#      with GITHUB_TOKEN, the API behind the "Sync fork" button. GitHub then creates the merge itself and
+#      upstream workflow changes land in the fork. Whether GitHub accepts this call from GITHUB_TOKEN when
+#      upstream changed workflow files is not documented; when it answers 422 the run fails and asks for
+#      SYNC_TOKEN.
+# A sync merge pushed with SYNC_TOKEN starts push-triggered workflows; Fork Build Image skips those commits
+# and is started by the release job instead.
+
+name: Fork Sync Upstream
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: merge pushes the merge to the default branch, pr opens a pull request in this repository
+        type: choice
+        options:
+          - merge
+          - pr
+        default: merge
+      gate:
+        description: Run the regression and mutation gate on the default branch even when nothing was merged
+        type: boolean
+        default: false
+
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UPSTREAM_REPOSITORY: immich-app/immich
+  UPSTREAM_BRANCH: main
+  CONFLICT_LABEL: upstream-sync-conflict
+  REGRESSION_LABEL: feature-regression-failure
+  WORKFLOWS_DIRECTORY: .github/workflows
+
+jobs:
+  sync:
+    name: Sync with upstream
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      default-branch: ${{ steps.fork.outputs.default-branch }}
+      has-issues: ${{ steps.fork.outputs.has-issues }}
+      sync-mode: ${{ steps.fork.outputs.sync-mode }}
+      fork-sha: ${{ steps.compare.outputs.fork-sha }}
+      upstream-sha: ${{ steps.compare.outputs.upstream-sha }}
+      new-upstream-commits: ${{ steps.compare.outputs.new-upstream-commits }}
+      merge-result: ${{ steps.merge.outputs.result }}
+      sync-branch: ${{ steps.merge.outputs.sync-branch }}
+      pushed-to-default-branch: ${{ steps.publish.outputs.pushed-to-default-branch }}
+      pushed-to-sync-branch: ${{ steps.publish.outputs.pushed-to-sync-branch }}
+      publish-method: ${{ steps.publish.outputs.method }}
+      pull-request: ${{ steps.publish.outputs.pull-request }}
+      default-branch-sha: ${{ steps.gate.outputs.default-branch-sha }}
+      release-tag: ${{ steps.release.outputs.fork-tag }}
+      upstream-release: ${{ steps.release.outputs.upstream-release }}
+      regression-issue: ${{ steps.gate.outputs.regression-issue }}
+      gate-ref: ${{ steps.gate.outputs.gate-ref }}
+      gate-reason: ${{ steps.gate.outputs.gate-reason }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPOSITORY: ${{ github.repository }}
+      SYNC_MODE: ${{ inputs.mode || vars.UPSTREAM_SYNC_MODE || 'merge' }}
+      HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Read fork settings
+        id: fork
+        run: |
+          if [[ "$SYNC_MODE" != merge && "$SYNC_MODE" != pr ]]; then
+            echo "::error::UPSTREAM_SYNC_MODE must be merge or pr, got '${SYNC_MODE}'."
+            exit 1
+          fi
+
+          {
+            echo "default-branch=$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            echo "has-issues=$(gh api "repos/${REPOSITORY}" --jq .has_issues)"
+            echo "date=$(date -u +%Y%m%d)"
+            echo "sync-mode=${SYNC_MODE}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Checkout the fork default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.fork.outputs.default-branch }}
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch upstream branch and tags
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git remote set-url --push upstream "pushing-to-upstream-is-disabled"
+          git fetch --no-tags upstream \
+            "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}" \
+            "+refs/tags/*:refs/upstream-tags/*"
+          git fetch --force --tags origin
+
+      - name: Compare the fork with upstream
+        id: compare
+        run: |
+          fork_sha=$(git rev-parse HEAD)
+          upstream_sha=$(git rev-parse "refs/remotes/upstream/${UPSTREAM_BRANCH}")
+          up_to_date=false
+          if git merge-base --is-ancestor "$upstream_sha" "$fork_sha"; then
+            up_to_date=true
+          fi
+
+          {
+            echo "fork-sha=${fork_sha}"
+            echo "upstream-sha=${upstream_sha}"
+            echo "new-upstream-commits=$(git rev-list --count "${fork_sha}..${upstream_sha}")"
+            echo "up-to-date=${up_to_date}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into a sync branch
+        id: merge
+        if: ${{ steps.compare.outputs.up-to-date == 'false' }}
+        env:
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+          SYNC_DATE: ${{ steps.fork.outputs.date }}
+          FORK_SHA: ${{ steps.compare.outputs.fork-sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+        run: |
+          sync_branch="sync/upstream-${SYNC_DATE}"
+          if [[ "$SYNC_MODE" == pr ]]; then
+            open_sync_branch=$(gh pr list --repo "$REPOSITORY" --state open --base "$DEFAULT_BRANCH" \
+              --json headRefName,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not) | .headRefName | select(startswith("sync/upstream-"))][0] // empty')
+            sync_branch="${open_sync_branch:-$sync_branch}"
+          fi
+          echo "sync-branch=${sync_branch}" | tee -a "$GITHUB_OUTPUT"
+
+          if [[ "$SYNC_MODE" == pr ]] && git ls-remote --exit-code --heads origin "$sync_branch" > /dev/null; then
+            git fetch origin "+refs/heads/${sync_branch}:refs/remotes/origin/${sync_branch}"
+            git switch --create "$sync_branch" "refs/remotes/origin/${sync_branch}"
+          else
+            git switch --create "$sync_branch"
+          fi
+
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "result=already-merged-on-sync-branch" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pre_merge_sha=$(git rev-parse HEAD)
+          merge_base=$(git merge-base "$pre_merge_sha" "$UPSTREAM_SHA")
+
+          git merge --no-commit --no-ff "refs/remotes/upstream/${UPSTREAM_BRANCH}" || true
+          if ! git rev-parse --quiet --verify MERGE_HEAD > /dev/null; then
+            echo "::error::git merge did not start a merge of upstream/${UPSTREAM_BRANCH}."
+            exit 1
+          fi
+
+          git rm -r -f --quiet --cached --ignore-unmatch -- "$WORKFLOWS_DIRECTORY"
+          rm -rf "$WORKFLOWS_DIRECTORY"
+          git checkout "$pre_merge_sha" -- "$WORKFLOWS_DIRECTORY"
+
+          conflicted_files=$(git diff --name-only --diff-filter=U)
+          if [[ -n "$conflicted_files" ]]; then
+            issue_body="${RUNNER_TEMP}/conflict-issue.md"
+            {
+              echo "The automatic upstream sync stopped because the merge has conflicts. Nothing was pushed."
+              echo
+              echo "## Range"
+              echo
+              echo "- Commit range: \`${FORK_SHA}..${UPSTREAM_SHA}\`"
+              echo "- Fork \`${DEFAULT_BRANCH}\`: \`${FORK_SHA}\`"
+              echo "- Upstream \`${UPSTREAM_BRANCH}\`: \`${UPSTREAM_SHA}\`"
+              echo "- Merge base: \`${merge_base}\`"
+              echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS}"
+              echo "- Workflow run: ${RUN_URL}"
+              echo
+              echo "## Conflicted files"
+              echo
+              while IFS= read -r file; do
+                echo "- \`${file}\`"
+              done <<< "$conflicted_files"
+              echo
+              echo "## Which side changed each file"
+              echo
+              echo "At most 5 commits per side, newest first."
+              while IFS= read -r file; do
+                echo
+                echo "### \`${file}\`"
+                echo
+                echo "Fork commits:"
+                echo
+                echo '```text'
+                git log --oneline -5 "${merge_base}..${pre_merge_sha}" -- "$file"
+                echo '```'
+                echo
+                echo "Upstream commits:"
+                echo
+                echo '```text'
+                git log --oneline -5 "${merge_base}..${UPSTREAM_SHA}" -- "$file"
+                echo '```'
+              done <<< "$conflicted_files"
+              echo
+              echo "## Resolve locally"
+              echo
+              echo "1. Add the upstream remote and fetch both sides."
+              echo
+              echo '```sh'
+              echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
+              echo "git fetch upstream ${UPSTREAM_BRANCH}"
+              echo "git fetch origin"
+              echo '```'
+              echo
+              echo "2. Create the resolution branch from the fork default branch and run the merge."
+              echo
+              echo '```sh'
+              echo "git switch -c sync/resolve-${SYNC_DATE} origin/${DEFAULT_BRANCH}"
+              echo "git merge --no-commit --no-ff upstream/${UPSTREAM_BRANCH}"
+              echo '```'
+              echo
+              echo "3. Resolve every conflicted file listed above and stage it with \`git add\`."
+              echo
+              echo "4. Restore \`${WORKFLOWS_DIRECTORY}\` from the fork side so the merge carries no upstream workflow changes, then commit."
+              echo
+              echo '```sh'
+              echo "git rm -r -f --quiet --cached --ignore-unmatch -- ${WORKFLOWS_DIRECTORY}"
+              echo "rm -rf ${WORKFLOWS_DIRECTORY}"
+              echo "git checkout HEAD -- ${WORKFLOWS_DIRECTORY}"
+              echo "git commit -m \"chore: merge upstream ${UPSTREAM_BRANCH}\""
+              echo "git diff --stat HEAD~1 -- ${WORKFLOWS_DIRECTORY}"
+              echo '```'
+              echo
+              echo "The last command must print nothing."
+              echo
+              echo "5. Test the web and server packages and regenerate the API clients."
+              echo
+              echo '```sh'
+              echo "mise //web:ci-unit"
+              echo "mise //web:build"
+              echo "mise //server:ci-unit"
+              echo "mise //:open-api"
+              echo "git status --short"
+              echo '```'
+              echo
+              echo "6. Push the branch to this repository and open the pull request here."
+              echo
+              echo '```sh'
+              echo "git push origin sync/resolve-${SYNC_DATE}"
+              echo "gh pr create --repo ${REPOSITORY} --base ${DEFAULT_BRANCH} --head sync/resolve-${SYNC_DATE} --title \"chore: sync upstream ${UPSTREAM_BRANCH}\" --body \"Resolves the upstream sync conflict.\""
+              echo '```'
+              echo
+              echo "Merge that pull request with a merge commit, not squash or rebase, so upstream history stays an ancestor of \`${DEFAULT_BRANCH}\`."
+              echo
+              echo "## Checklist after resolving"
+              echo
+              echo "- [ ] Web build passes (\`mise //web:build\`)"
+              echo "- [ ] Web unit tests pass (\`mise //web:ci-unit\`)"
+              echo "- [ ] Server tests pass (\`mise //server:ci-unit\`)"
+              echo "- [ ] Move to album still works: select assets in an album, move them, they leave the source album and appear in the target album"
+              echo "- [ ] Regenerated API clients are up to date (\`mise //:open-api\` leaves \`git status --short\` empty)"
+              echo "- [ ] \`${WORKFLOWS_DIRECTORY}\` is identical to the fork default branch"
+              echo
+              echo "This issue is closed automatically by the next sync run that merges cleanly."
+            } > "$issue_body"
+
+            git merge --abort
+            {
+              echo "result=conflict"
+              echo "conflicted-file-count=$(grep -c . <<< "$conflicted_files")"
+              echo "issue-body=${issue_body}"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit --quiet -m "chore: merge upstream ${UPSTREAM_BRANCH} at ${UPSTREAM_SHA::10}"
+
+          workflow_drift=$(git diff --stat HEAD~1 -- "$WORKFLOWS_DIRECTORY"; git status --porcelain -- "$WORKFLOWS_DIRECTORY")
+          if [[ -n "$workflow_drift" ]]; then
+            echo "::error::The merge commit changes ${WORKFLOWS_DIRECTORY}, refusing to push."
+            echo "$workflow_drift"
+            exit 1
+          fi
+
+          {
+            echo "result=merged"
+            echo "merge-sha=$(git rev-parse HEAD)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Report the merge conflict in an issue
+        if: ${{ steps.merge.outputs.result == 'conflict' }}
+        env:
+          HAS_ISSUES: ${{ steps.fork.outputs.has-issues }}
+          ISSUE_BODY: ${{ steps.merge.outputs.issue-body }}
+          COMMIT_RANGE: ${{ steps.compare.outputs.fork-sha }}..${{ steps.compare.outputs.upstream-sha }}
+          CONFLICTED_FILE_COUNT: ${{ steps.merge.outputs.conflicted-file-count }}
+        run: |
+          if [[ "$HAS_ISSUES" != true ]]; then
+            echo "::error::The merge conflicts and issues are disabled in ${REPOSITORY}. Enable them under Settings, General, Features."
+            cat "$ISSUE_BODY" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          gh label create "$CONFLICT_LABEL" --repo "$REPOSITORY" --force \
+            --color D93F0B --description "The automatic upstream sync stopped on merge conflicts"
+
+          issue_number=$(gh issue list --repo "$REPOSITORY" --state open --label "$CONFLICT_LABEL" \
+            --json number --jq '.[0].number // empty')
+
+          if [[ -z "$issue_number" ]]; then
+            gh issue create --repo "$REPOSITORY" --label "$CONFLICT_LABEL" \
+              --title "Upstream sync conflict" --body-file "$ISSUE_BODY"
+            echo "::warning::Upstream sync stopped on ${CONFLICTED_FILE_COUNT} conflicted file(s)."
+            exit 0
+          fi
+
+          current_issue_body=$(gh issue view "$issue_number" --repo "$REPOSITORY" --json body --jq .body)
+          if [[ "$current_issue_body" == *"$COMMIT_RANGE"* ]]; then
+            echo "Issue ${issue_number} already describes ${COMMIT_RANGE}."
+          else
+            gh issue edit "$issue_number" --repo "$REPOSITORY" --body-file "$ISSUE_BODY"
+            gh issue comment "$issue_number" --repo "$REPOSITORY" \
+              --body "The conflict changed. The description now covers \`${COMMIT_RANGE}\` with ${CONFLICTED_FILE_COUNT} conflicted file(s). Run: ${RUN_URL}"
+          fi
+
+          echo "::warning::Upstream sync stopped on ${CONFLICTED_FILE_COUNT} conflicted file(s)."
+
+      - name: Publish the merge
+        id: publish
+        if: ${{ steps.merge.outputs.result == 'merged' }}
+        env:
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync-branch }}
+          COMMIT_RANGE: ${{ steps.compare.outputs.fork-sha }}..${{ steps.compare.outputs.upstream-sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+        run: |
+          push_log="${RUNNER_TEMP}/push.log"
+          push_to_fork() {
+            git push origin "$1" 2>&1 | tee "$push_log"
+          }
+          rejected_for_workflow_files() {
+            grep --quiet --ignore-case 'workflow' "$push_log"
+          }
+          ask_for_sync_token() {
+            if [[ "$HAS_SYNC_TOKEN" == true ]]; then
+              echo "::error::GitHub rejected the push although SYNC_TOKEN is set. The token needs contents and workflows write access to ${REPOSITORY}."
+            else
+              echo "::error::GitHub rejected the push because a commit in the pushed range changes ${WORKFLOWS_DIRECTORY}, which GITHUB_TOKEN is not allowed to push. Add a personal access token with contents and workflows write access as the secret SYNC_TOKEN."
+            fi
+          }
+
+          if [[ "$SYNC_MODE" == merge ]]; then
+            if push_to_fork "HEAD:refs/heads/${DEFAULT_BRANCH}"; then
+              {
+                echo "pushed-to-default-branch=true"
+                echo "method=push"
+                echo "published-sha=$(git rev-parse HEAD)"
+              } | tee -a "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! rejected_for_workflow_files; then
+              echo "::error::Pushing to ${DEFAULT_BRANCH} of ${REPOSITORY} failed."
+              exit 1
+            fi
+
+            echo "::warning::The push was rejected because the merged commits change ${WORKFLOWS_DIRECTORY}. Asking GitHub to merge upstream itself."
+            api_response="${RUNNER_TEMP}/merge-upstream.json"
+            if ! gh api --method POST "repos/${REPOSITORY}/merge-upstream" --field "branch=${DEFAULT_BRANCH}" > "$api_response"; then
+              cat "$api_response"
+              echo "::error::The merge-upstream API did not sync ${DEFAULT_BRANCH} either."
+              ask_for_sync_token
+              exit 1
+            fi
+            cat "$api_response"
+            git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+            published_sha=$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")
+            if ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$published_sha"; then
+              echo "::error::The merge-upstream API answered $(jq --raw-output .merge_type "$api_response") but ${DEFAULT_BRANCH} does not contain upstream ${UPSTREAM_SHA}."
+              exit 1
+            fi
+            {
+              echo "pushed-to-default-branch=true"
+              echo "method=merge-upstream-api"
+              echo "published-sha=${published_sha}"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! push_to_fork "HEAD:refs/heads/${SYNC_BRANCH}"; then
+            if rejected_for_workflow_files; then
+              ask_for_sync_token
+            else
+              echo "::error::Pushing ${SYNC_BRANCH} to ${REPOSITORY} failed."
+            fi
+            exit 1
+          fi
+          {
+            echo "pushed-to-sync-branch=true"
+            echo "method=push"
+            echo "published-sha=$(git rev-parse HEAD)"
+          } | tee -a "$GITHUB_OUTPUT"
+          pull_request=$(gh pr list --repo "$REPOSITORY" --state open --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" \
+            --json number --jq '.[0].number // empty')
+          if [[ -n "$pull_request" ]]; then
+            echo "Pull request ${pull_request} already tracks ${SYNC_BRANCH}."
+            echo "pull-request=${pull_request}" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pull_request_body="${RUNNER_TEMP}/pull-request.md"
+          {
+            echo "Merges upstream \`${UPSTREAM_BRANCH}\` into \`${DEFAULT_BRANCH}\`."
+            echo
+            echo "- Commit range: \`${COMMIT_RANGE}\`"
+            echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS}"
+            echo "- \`${WORKFLOWS_DIRECTORY}\` is kept identical to the fork side."
+            echo
+            echo "Merge with a merge commit so the upstream history stays an ancestor of \`${DEFAULT_BRANCH}\`."
+          } > "$pull_request_body"
+
+          gh pr create --repo "$REPOSITORY" --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" \
+            --title "chore: sync upstream ${UPSTREAM_BRANCH}" --body-file "$pull_request_body"
+          pull_request=$(gh pr list --repo "$REPOSITORY" --state open --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" \
+            --json number --jq '.[0].number // empty')
+          echo "pull-request=${pull_request}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Close the resolved conflict issue
+        if: ${{ steps.fork.outputs.has-issues == 'true' && (steps.compare.outputs.up-to-date == 'true' || steps.merge.outputs.result == 'merged' || steps.merge.outputs.result == 'already-merged-on-sync-branch') }}
+        env:
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+        run: |
+          gh issue list --repo "$REPOSITORY" --state open --label "$CONFLICT_LABEL" --json number --jq '.[].number' |
+            while IFS= read -r issue_number; do
+              gh issue close "$issue_number" --repo "$REPOSITORY" \
+                --comment "Upstream \`${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\` merges cleanly now. Run: ${RUN_URL}"
+            done
+
+      - name: Find an upstream release without a fork tag
+        id: release
+        if: ${{ steps.merge.outputs.result != 'conflict' }}
+        env:
+          DEFAULT_BRANCH_SHA: ${{ steps.publish.outputs.pushed-to-default-branch == 'true' && steps.publish.outputs.published-sha || steps.compare.outputs.fork-sha }}
+        run: |
+          upstream_release=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name || true)
+          if [[ ! "$upstream_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::Skipping release detection, the latest upstream release tag reads '${upstream_release}'."
+            exit 0
+          fi
+
+          if ! release_sha=$(git rev-parse --quiet --verify "refs/upstream-tags/${upstream_release}^{commit}"); then
+            echo "::warning::Upstream release ${upstream_release} has no fetched tag."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$release_sha" "$DEFAULT_BRANCH_SHA"; then
+            echo "Upstream release ${upstream_release} is not contained in the fork default branch yet."
+            exit 0
+          fi
+
+          latest_fork_tag=$(git tag --list 'v*-fork.*' --sort=-v:refname | sed -n 1p)
+          latest_fork_base="${latest_fork_tag%-fork.*}"
+          if [[ -n "$latest_fork_base" ]]; then
+            newest=$(printf '%s\n' "$latest_fork_base" "$upstream_release" | sort --version-sort | tail -n 1)
+            if [[ "$latest_fork_base" == "$upstream_release" || "$newest" != "$upstream_release" ]]; then
+              echo "Fork tag ${latest_fork_tag} already covers upstream release ${upstream_release}."
+              exit 0
+            fi
+          fi
+
+          last_build_number=$(git tag --list "${upstream_release}-fork.*" | sed -E 's/^.*-fork\.([0-9]+)$/\1/' | sort --numeric-sort | tail -n 1)
+          {
+            echo "upstream-release=${upstream_release}"
+            echo "fork-tag=${upstream_release}-fork.$((${last_build_number:-0} + 1))"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Plan the regression and mutation gate
+        id: gate
+        if: ${{ steps.merge.outputs.result != 'conflict' }}
+        env:
+          HAS_ISSUES: ${{ steps.fork.outputs.has-issues }}
+          FORCE_GATE: ${{ inputs.gate || false }}
+          FORK_SHA: ${{ steps.compare.outputs.fork-sha }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.published-sha }}
+          PUSHED_TO_DEFAULT_BRANCH: ${{ steps.publish.outputs.pushed-to-default-branch }}
+          FORK_TAG: ${{ steps.release.outputs.fork-tag }}
+        run: |
+          default_branch_sha="$FORK_SHA"
+          if [[ "$PUSHED_TO_DEFAULT_BRANCH" == true ]]; then
+            default_branch_sha="$PUBLISHED_SHA"
+          fi
+
+          regression_issue=''
+          if [[ "$HAS_ISSUES" == true ]]; then
+            regression_issue=$(gh issue list --repo "$REPOSITORY" --state open --label "$REGRESSION_LABEL" \
+              --json number --jq '.[0].number // empty')
+          fi
+
+          gate_ref=''
+          gate_reason=''
+          if [[ -n "$PUBLISHED_SHA" ]]; then
+            gate_ref="$PUBLISHED_SHA"
+            gate_reason='upstream was merged in this run'
+          elif [[ -n "$regression_issue" ]]; then
+            gate_ref="$default_branch_sha"
+            gate_reason="regression issue ${regression_issue} is still open"
+          elif [[ -n "$FORK_TAG" ]]; then
+            gate_ref="$default_branch_sha"
+            gate_reason="upstream release is waiting for the fork tag ${FORK_TAG}"
+          elif [[ "$FORCE_GATE" == true ]]; then
+            gate_ref="$default_branch_sha"
+            gate_reason='requested with the gate input'
+          fi
+
+          {
+            echo "default-branch-sha=${default_branch_sha}"
+            echo "regression-issue=${regression_issue}"
+            echo "gate-ref=${gate_ref}"
+            echo "gate-reason=${gate_reason}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          UP_TO_DATE: ${{ steps.compare.outputs.up-to-date }}
+          FORK_SHA: ${{ steps.compare.outputs.fork-sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          PUSHED_TO_DEFAULT_BRANCH: ${{ steps.publish.outputs.pushed-to-default-branch }}
+          PUBLISH_METHOD: ${{ steps.publish.outputs.method }}
+          FORK_TAG: ${{ steps.release.outputs.fork-tag }}
+          GATE_REF: ${{ steps.gate.outputs.gate-ref }}
+          GATE_REASON: ${{ steps.gate.outputs.gate-reason }}
+        run: |
+          {
+            echo "### Upstream sync"
+            echo
+            echo "- Mode: \`${SYNC_MODE}\`"
+            echo "- Fork: \`${FORK_SHA}\`"
+            echo "- Upstream: \`${UPSTREAM_SHA}\`"
+            echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS:-unknown}"
+            echo "- Already up to date: ${UP_TO_DATE:-unknown}"
+            echo "- Merge result: ${MERGE_RESULT:-not attempted}"
+            echo "- Pushed to the default branch: ${PUSHED_TO_DEFAULT_BRANCH:-false}"
+            echo "- Published with: ${PUBLISH_METHOD:-nothing published}"
+            echo "- Fork tag waiting for a green gate: ${FORK_TAG:-none}"
+            if [[ -n "$GATE_REF" ]]; then
+              echo "- Gate: runs on \`${GATE_REF}\` because ${GATE_REASON}"
+            else
+              echo "- Gate: not needed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  regression:
+    name: Regression
+    needs: sync
+    if: ${{ needs.sync.outputs.gate-ref != '' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-regression.yml
+    with:
+      ref: ${{ needs.sync.outputs.gate-ref }}
+
+  mutation:
+    name: Mutation
+    needs: sync
+    if: ${{ needs.sync.outputs.gate-ref != '' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-mutation-test.yml
+    with:
+      ref: ${{ needs.sync.outputs.gate-ref }}
+      target: all
+
+  gate-report:
+    name: Report the gate result
+    needs: [sync, regression, mutation]
+    if: ${{ always() && needs.sync.result == 'success' && needs.sync.outputs.gate-ref != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPOSITORY: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+      REGRESSION_RESULT: ${{ needs.regression.result }}
+      MUTATION_RESULT: ${{ needs.mutation.result }}
+      HAS_ISSUES: ${{ needs.sync.outputs.has-issues }}
+      DEFAULT_BRANCH: ${{ needs.sync.outputs.default-branch }}
+      GATE_REF: ${{ needs.sync.outputs.gate-ref }}
+      GATE_REASON: ${{ needs.sync.outputs.gate-reason }}
+      FORK_SHA: ${{ needs.sync.outputs.fork-sha }}
+      UPSTREAM_SHA: ${{ needs.sync.outputs.upstream-sha }}
+      NEW_UPSTREAM_COMMITS: ${{ needs.sync.outputs.new-upstream-commits }}
+      MERGED_IN_THIS_RUN: ${{ needs.sync.outputs.publish-method != '' }}
+      PULL_REQUEST: ${{ needs.sync.outputs.pull-request }}
+      FEATURE_PATHS: |
+        server/src/controllers/album.controller.ts
+        server/src/controllers/album.controller.spec.ts
+        server/src/services/album.service.ts
+        server/src/services/album.service.spec.ts
+        server/src/repositories/album.repository.ts
+        server/src/dtos/album.dto.ts
+        server/src/queries/album.repository.sql
+        server/test/medium/specs/services/album.service.spec.ts
+        web/src/lib/queries/album.query.ts
+        web/src/lib/queries/album.query.spec.ts
+        web/src/lib/services/asset.service.ts
+        web/src/lib/modals/AssetMoveToAlbumModal.svelte
+        web/src/lib/modals/AlbumPickerModal.svelte
+        web/src/lib/components/asset-viewer/AlbumListItem.svelte
+        web/src/routes/(user)/albums
+        :(glob)mobile/lib/**/*album*
+        :(glob)mobile/test/**/*album*
+        mobile/test/api.mocks.dart
+        e2e/src/specs/server/api/album.e2e-spec.ts
+        open-api/immich-openapi-specs.json
+        packages/sdk/src/fetch-client.ts
+        i18n/en.json
+      CALLED_PATHS: |
+        server/src
+        web/src/lib
+        mobile/lib
+        mobile/pubspec.yaml
+        packages/sdk
+        e2e/src
+        mise.toml
+        server/mise.toml
+        web/mise.toml
+        mobile/mise.toml
+        e2e/mise.toml
+    outputs:
+      gate: ${{ steps.result.outputs.gate }}
+    steps:
+      - name: Read the gate result
+        id: result
+        run: |
+          gate=incomplete
+          if [[ "$REGRESSION_RESULT" == success && "$MUTATION_RESULT" == success ]]; then
+            gate=green
+          elif [[ "$REGRESSION_RESULT" == failure || "$MUTATION_RESULT" == failure ]]; then
+            gate=red
+          fi
+          echo "gate=${gate}" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### Regression and mutation gate: ${gate}"
+            echo
+            echo "- Tested commit: \`${GATE_REF}\` (${GATE_REASON})"
+            echo "- Fork Regression: ${REGRESSION_RESULT}"
+            echo "- Fork Mutation Test: ${MUTATION_RESULT}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout the tested commit
+        if: ${{ steps.result.outputs.gate == 'red' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.sync.outputs.gate-ref }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Describe the failure
+        id: describe
+        if: ${{ steps.result.outputs.gate == 'red' }}
+        env:
+          REGRESSION_ISSUE: ${{ needs.sync.outputs.regression-issue }}
+        run: |
+          failed_jobs="${RUNNER_TEMP}/failed-jobs.md"
+          gh api --paginate "repos/${REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs" |
+            jq --raw-output '
+              .jobs[]
+              | select(.conclusion == "failure" or .conclusion == "timed_out")
+              | "- [\(.name)](\(.html_url))"
+                + (([.steps[]? | select(.conclusion == "failure") | .name] | join(", ")) as $steps
+                   | if $steps == "" then "" else ", failed step: \($steps)" end)' > "$failed_jobs" || true
+          if [[ ! -s "$failed_jobs" ]]; then
+            echo "- The job list was not available. Fork Regression: ${REGRESSION_RESULT}, Fork Mutation Test: ${MUTATION_RESULT}." > "$failed_jobs"
+          fi
+
+          base_sha=''
+          range_description=''
+          if [[ "$MERGED_IN_THIS_RUN" == true ]]; then
+            base_sha="$FORK_SHA"
+            range_description="\`${FORK_SHA}..${UPSTREAM_SHA}\` (${NEW_UPSTREAM_COMMITS} upstream commits, merged in this run)"
+          elif [[ -n "$REGRESSION_ISSUE" ]]; then
+            recorded_range=$(gh issue view "$REGRESSION_ISSUE" --repo "$REPOSITORY" --json body --jq .body |
+              grep --max-count 1 'Upstream commit range:' |
+              grep --only-matching --extended-regexp '[0-9a-f]{40}\.\.[0-9a-f]{40}' | sed -n 1p || true)
+            if [[ -n "$recorded_range" ]]; then
+              base_sha="${recorded_range%%..*}"
+              range_description="\`${recorded_range}\` (merged in an earlier run)"
+            fi
+          fi
+          if [[ -z "$base_sha" ]]; then
+            base_sha=$(git rev-parse HEAD^1)
+            range_description="\`${base_sha}..${GATE_REF}\` (nothing was merged in this run, this is the last commit on the tested branch)"
+          fi
+          if ! git cat-file -e "${base_sha}^{commit}" 2> /dev/null; then
+            git fetch --no-tags --depth 1 origin "$base_sha" || true
+          fi
+
+          feature_paths=()
+          while IFS= read -r path; do
+            [[ -n "$path" ]] && feature_paths+=("$path")
+          done <<< "$FEATURE_PATHS"
+          called_paths=()
+          while IFS= read -r path; do
+            [[ -n "$path" ]] && called_paths+=("$path")
+          done <<< "$CALLED_PATHS"
+
+          feature_stat=$(git diff --stat=200 --find-renames "$base_sha" "$GATE_REF" -- "${feature_paths[@]}" 2> /dev/null || true)
+          called_stat=$(git diff --dirstat=files,3,cumulative "$base_sha" "$GATE_REF" -- "${called_paths[@]}" 2> /dev/null || true)
+
+          issue_body="${RUNNER_TEMP}/regression-issue.md"
+          {
+            echo "The regression and mutation gate for the \"Move to album\" feature failed after an upstream sync. No release was tagged and no build was started."
+            echo
+            echo "## Failing jobs"
+            echo
+            cat "$failed_jobs"
+            echo
+            echo "## Range"
+            echo
+            echo "- Upstream commit range: ${range_description}"
+            echo "- Tested commit: \`${GATE_REF}\`"
+            echo "- Gate ran because: ${GATE_REASON}"
+            echo "- Workflow run: ${RUN_URL}"
+            echo
+            echo "## Likely suspects"
+            echo
+            echo "Changes to the feature files in that range (\`git diff --stat ${base_sha::10} ${GATE_REF::10}\`):"
+            echo
+            echo '```text'
+            if [[ -n "$feature_stat" ]]; then
+              echo "$feature_stat"
+            else
+              echo "The range does not change any feature file. Look at what the feature calls."
+            fi
+            echo '```'
+            echo
+            echo "Share of changed files per directory in the code the feature calls:"
+            echo
+            echo '```text'
+            echo "${called_stat:-No changes.}"
+            echo '```'
+            echo
+            echo "## Reproduce locally"
+            echo
+            echo '```sh'
+            echo "git fetch origin"
+            echo "git switch --detach ${GATE_REF}"
+            echo
+            echo "# OpenAPI clients: the last command must print nothing"
+            echo "mise //:open-api"
+            echo "git status --short open-api/immich-openapi-specs.json packages/sdk/src"
+            echo
+            echo "# Server"
+            echo "mise //server:install && mise //:plugins && mise //packages/plugin-core:build"
+            echo "mise //server:lint && mise //server:check"
+            echo "mise //server:test --run src/services/album.service.spec.ts src/controllers/album.controller.spec.ts"
+            echo "mise //server:test-medium --run test/medium/specs/services/album.service.spec.ts"
+            echo
+            echo "# Web"
+            echo "mise //:sdk:install && mise //:sdk:build && mise //web:install"
+            echo "mise //web:check"
+            echo "mise //web:test --run src/lib/queries/album.query.spec.ts"
+            echo
+            echo "# Mobile"
+            echo "(cd mobile && mise install)"
+            echo "mise //mobile:install && mise //mobile:codegen"
+            echo "(cd mobile && mise exec -- dart analyze --fatal-infos)"
+            echo "(cd mobile && mise exec -- flutter test \$(grep -rlE 'moveAssets|MoveToAlbum' test --include='*_test.dart'))"
+            echo
+            echo "# End to end, needs docker"
+            echo "git submodule update --init --depth 1 e2e/test-assets"
+            echo "mise //e2e:ci-setup"
+            echo "(cd e2e && docker compose up --detach --build --wait)"
+            echo "(cd e2e && VITEST_DISABLE_DOCKER_SETUP=true mise exec -- pnpm exec vitest --run src/specs/server/api/album.e2e-spec.ts)"
+            echo "(cd e2e && docker compose down --volumes)"
+            echo
+            echo "# Mobile mutants"
+            echo "(cd mobile && mise exec -- python3 ../.github/mutation/dart/run.py --mobile-dir .)"
+            echo
+            echo "# Web and server mutants run in CI"
+            echo "gh workflow run fork-mutation-test.yml --repo ${REPOSITORY} --ref ${DEFAULT_BRANCH} --field ref=${GATE_REF}"
+            echo '```'
+            echo
+            echo "This issue is closed automatically by the next sync run whose gate is green. Until then every sync run tests the default branch again."
+          } > "$issue_body"
+
+          {
+            echo "issue-body=${issue_body}"
+            echo "signature=${GATE_REF} $(sort "$failed_jobs" | sed -E 's/\]\([^)]*\)//' | tr '\n' ' ')"
+          } | tee -a "$GITHUB_OUTPUT"
+          cat "$issue_body" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the regression issue
+        if: ${{ steps.result.outputs.gate == 'red' }}
+        env:
+          ISSUE_BODY: ${{ steps.describe.outputs.issue-body }}
+          SIGNATURE: ${{ steps.describe.outputs.signature }}
+        run: |
+          if [[ "$HAS_ISSUES" != true ]]; then
+            echo "::error::The gate is red and issues are disabled in ${REPOSITORY}. Enable them under Settings, General, Features."
+            exit 1
+          fi
+
+          gh label create "$REGRESSION_LABEL" --repo "$REPOSITORY" --force \
+            --color B60205 --description "The Move to album feature fails its regression or mutation tests after an upstream sync"
+
+          printf '\n<!-- gate-signature: %s -->\n' "$SIGNATURE" >> "$ISSUE_BODY"
+
+          issue_number=$(gh issue list --repo "$REPOSITORY" --state open --label "$REGRESSION_LABEL" \
+            --json number --jq '.[0].number // empty')
+          if [[ -z "$issue_number" ]]; then
+            gh issue create --repo "$REPOSITORY" --label "$REGRESSION_LABEL" \
+              --title "Move to album fails after upstream sync" --body-file "$ISSUE_BODY"
+            exit 0
+          fi
+
+          current_issue_body=$(gh issue view "$issue_number" --repo "$REPOSITORY" --json body --jq .body)
+          gh issue edit "$issue_number" --repo "$REPOSITORY" --body-file "$ISSUE_BODY"
+          if [[ "$current_issue_body" == *"gate-signature: ${SIGNATURE} -->"* ]]; then
+            echo "Issue ${issue_number} already describes this failure."
+          else
+            gh issue comment "$issue_number" --repo "$REPOSITORY" \
+              --body "The gate is still red, with a different commit or different failing jobs. The description is updated. Run: ${RUN_URL}"
+          fi
+
+      - name: Close the regression issue
+        if: ${{ steps.result.outputs.gate == 'green' && needs.sync.outputs.has-issues == 'true' }}
+        run: |
+          gh issue list --repo "$REPOSITORY" --state open --label "$REGRESSION_LABEL" --json number --jq '.[].number' |
+            while IFS= read -r issue_number; do
+              gh issue close "$issue_number" --repo "$REPOSITORY" \
+                --comment "The regression and mutation gate is green for \`${GATE_REF}\`. Run: ${RUN_URL}"
+            done
+
+      - name: Comment on the sync pull request
+        if: ${{ steps.result.outputs.gate != 'incomplete' && needs.sync.outputs.pull-request != '' && needs.sync.outputs.pushed-to-sync-branch == 'true' }}
+        env:
+          GATE: ${{ steps.result.outputs.gate }}
+        run: |
+          gh pr comment "$PULL_REQUEST" --repo "$REPOSITORY" \
+            --body "Regression and mutation gate for \`${GATE_REF}\`: ${GATE}. Fork Regression: ${REGRESSION_RESULT}, Fork Mutation Test: ${MUTATION_RESULT}. Run: ${RUN_URL}"
+
+      - name: Fail the run when the gate is red
+        if: ${{ steps.result.outputs.gate == 'red' }}
+        run: |
+          echo "::error::The regression and mutation gate is red for ${GATE_REF}. See the issue labelled ${REGRESSION_LABEL}."
+          exit 1
+
+  release:
+    name: Tag and build
+    needs: [sync, regression, mutation]
+    if: ${{ needs.regression.result == 'success' && needs.mutation.result == 'success' && needs.sync.outputs.gate-ref == needs.sync.outputs.default-branch-sha }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPOSITORY: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ needs.sync.outputs.default-branch }}
+      DEFAULT_BRANCH_SHA: ${{ needs.sync.outputs.default-branch-sha }}
+      FORK_TAG: ${{ needs.sync.outputs.release-tag }}
+      UPSTREAM_RELEASE: ${{ needs.sync.outputs.upstream-release }}
+      BUILD_DEFAULT_BRANCH: ${{ needs.sync.outputs.pushed-to-default-branch == 'true' || needs.sync.outputs.regression-issue != '' }}
+    steps:
+      - name: Checkout the gated commit
+        if: ${{ needs.sync.outputs.release-tag != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.sync.outputs.default-branch-sha }}
+          persist-credentials: true
+
+      - name: Tag the upstream release
+        id: tag
+        if: ${{ needs.sync.outputs.release-tag != '' }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${FORK_TAG}" > /dev/null; then
+            echo "Tag ${FORK_TAG} already exists."
+            exit 0
+          fi
+          git tag --annotate "$FORK_TAG" "$DEFAULT_BRANCH_SHA" --message "Upstream ${UPSTREAM_RELEASE} with fork changes"
+          git push origin "refs/tags/${FORK_TAG}"
+          echo "fork-tag=${FORK_TAG}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Start the builds
+        env:
+          PUSHED_FORK_TAG: ${{ steps.tag.outputs.fork-tag }}
+        run: |
+          if [[ -n "$PUSHED_FORK_TAG" ]]; then
+            gh workflow run fork-build-image.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" --field "ref=${PUSHED_FORK_TAG}"
+            gh workflow run fork-build-android.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" --field "ref=${PUSHED_FORK_TAG}"
+          elif [[ "$BUILD_DEFAULT_BRANCH" == true ]]; then
+            gh workflow run fork-build-image.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
+          else
+            echo "Nothing to build."
+          fi
+          {
+            echo "### Release"
+            echo
+            echo "- Gated commit: \`${DEFAULT_BRANCH_SHA}\`"
+            echo "- New fork tag: ${PUSHED_FORK_TAG:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"

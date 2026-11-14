@@ -1,0 +1,698 @@
+{
+  "targets": [
+    {
+      "file": "lib/repositories/*album_api_repository.dart",
+      "mutants": [
+        {
+          "description": "treats failed assets as moved and moved assets as failed",
+          "edits": [
+            {
+              "find": "if (dto.success) {",
+              "replace": "if (!dto.success) {"
+            }
+          ],
+          "id": "negate-success",
+          "operator": "negate-condition"
+        },
+        {
+          "description": "never records a moved asset",
+          "edits": [
+            {
+              "find": "moved.add(dto.id);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-moved-add",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "never records a failed asset",
+          "edits": [
+            {
+              "find": "failed.add(dto.id);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-failed-add",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "returns an empty moved list",
+          "edits": [
+            {
+              "find": "return (moved: moved, failed: failed);",
+              "replace": "return (moved: <String>[], failed: failed);"
+            }
+          ],
+          "id": "return-no-moved",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "returns an empty failed list",
+          "edits": [
+            {
+              "find": "return (moved: moved, failed: failed);",
+              "replace": "return (moved: moved, failed: <String>[]);"
+            }
+          ],
+          "id": "return-no-failed",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "sends the request for the target album instead of the source album",
+          "edits": [
+            {
+              "find": "sourceAlbumId, AlbumMoveAssetsDto(",
+              "replace": "targetAlbumId, AlbumMoveAssetsDto("
+            }
+          ],
+          "id": "request-from-target",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "names the source album as the target of the move",
+          "edits": [
+            {
+              "find": "targetAlbumId: targetAlbumId",
+              "replace": "targetAlbumId: sourceAlbumId"
+            }
+          ],
+          "id": "target-is-source",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "sends an empty asset list",
+          "edits": [
+            {
+              "find": "assetIds: assetIds.toList()",
+              "replace": "assetIds: <String>[]"
+            }
+          ],
+          "id": "send-no-assets",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "drops the first asset from the request",
+          "edits": [
+            {
+              "find": "assetIds: assetIds.toList()",
+              "replace": "assetIds: assetIds.skip(1).toList()"
+            }
+          ],
+          "id": "send-one-asset-less",
+          "operator": "off-by-one"
+        }
+      ],
+      "name": "api-repository",
+      "scope": "Future<({List<String> moved, List<String> failed})> moveAssets(",
+      "tests": ["test/unit/repositories/*album_api_repository_test.dart"]
+    },
+    {
+      "file": "lib/domain/services/remote_album.service.dart",
+      "mutants": [
+        {
+          "description": "updates the local albums only when nothing was moved",
+          "edits": [
+            {
+              "find": "if (result.moved.isNotEmpty) {",
+              "replace": "if (result.moved.isEmpty) {"
+            }
+          ],
+          "id": "flip-moved-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "writes to the local albums even when nothing was moved",
+          "edits": [
+            {
+              "find": "if (result.moved.isNotEmpty) {",
+              "replace": "if (true) {"
+            }
+          ],
+          "id": "always-write-locally",
+          "operator": "remove-condition"
+        },
+        {
+          "description": "never updates the local albums",
+          "edits": [
+            {
+              "find": "await _repository.moveAssets(sourceAlbumId, targetAlbumId, result.moved);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-local-move",
+          "operator": "remove-call"
+        },
+        {
+          "description": "moves the local rows from the target album to the source album",
+          "edits": [
+            {
+              "find": ".moveAssets(sourceAlbumId, targetAlbumId, result.moved);",
+              "replace": ".moveAssets(targetAlbumId, sourceAlbumId, result.moved);"
+            }
+          ],
+          "id": "local-move-reversed",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "moves every requested asset locally, including the ones the server refused",
+          "edits": [
+            {
+              "find": ".moveAssets(sourceAlbumId, targetAlbumId, result.moved);",
+              "replace": ".moveAssets(sourceAlbumId, targetAlbumId, assetIds);"
+            }
+          ],
+          "id": "local-move-all-requested",
+          "operator": "replace-argument"
+        },
+        {
+          "description": "asks the server to move from the target album to the source album",
+          "edits": [
+            {
+              "find": ".moveAssets(sourceAlbumId, targetAlbumId, assetIds);",
+              "replace": ".moveAssets(targetAlbumId, sourceAlbumId, assetIds);"
+            }
+          ],
+          "id": "request-reversed",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "reports that nothing was moved",
+          "edits": [
+            {
+              "find": "return result.moved;",
+              "replace": "return <String>[];"
+            }
+          ],
+          "id": "return-nothing",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "reports every requested asset as moved",
+          "edits": [
+            {
+              "find": "return result.moved;",
+              "replace": "return assetIds;"
+            }
+          ],
+          "id": "return-requested",
+          "operator": "replace-return"
+        }
+      ],
+      "name": "service",
+      "scope": "Future<List<String>> moveAssets(",
+      "tests": [
+        "test/unit/services/remote_album_service_test.dart",
+        "test/unit/presentation/actions/move_to_album_action_test.dart"
+      ]
+    },
+    {
+      "file": "lib/infrastructure/repositories/remote_album.repository.dart",
+      "mutants": [
+        {
+          "description": "returns early for every non-empty move",
+          "edits": [
+            {
+              "find": "if (assetIds.isEmpty) {",
+              "replace": "if (assetIds.isNotEmpty) {"
+            }
+          ],
+          "id": "flip-empty-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "runs the transaction for an empty move",
+          "edits": [
+            {
+              "find": "if (assetIds.isEmpty) {",
+              "replace": "if (false) {"
+            }
+          ],
+          "id": "drop-empty-check",
+          "operator": "remove-condition"
+        },
+        {
+          "description": "runs the delete, the insert and the thumbnail update outside a transaction",
+          "edits": [
+            {
+              "find": "await _db.transaction(() async {",
+              "replace": "await (() async {"
+            },
+            {
+              "find": "thumbnailAssetId: Value(assetIds.first))); });",
+              "replace": "thumbnailAssetId: Value(assetIds.first)));\n    })();"
+            }
+          ],
+          "id": "drop-transaction",
+          "operator": "drop-transaction"
+        },
+        {
+          "description": "leaves the assets in the source album",
+          "edits": [
+            {
+              "find": "batch.deleteWhere( _db.remoteAlbumAssetEntity, (row) => row.albumId.equals(sourceAlbumId) & row.assetId.equals(assetId), );",
+              "replace": ""
+            }
+          ],
+          "id": "drop-source-delete",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "never adds the assets to the target album",
+          "edits": [
+            {
+              "find": "batch.insertAll(_db.remoteAlbumAssetEntity, targetAlbumAssets, mode: InsertMode.insertOrIgnore);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-target-insert",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "deletes the assets from the target album instead of the source album",
+          "edits": [
+            {
+              "find": "row.albumId.equals(sourceAlbumId) & row.assetId.equals(assetId)",
+              "replace": "row.albumId.equals(targetAlbumId) & row.assetId.equals(assetId)"
+            }
+          ],
+          "id": "delete-from-target",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "deletes every row of the source album and every album row of the asset",
+          "edits": [
+            {
+              "find": "row.albumId.equals(sourceAlbumId) & row.assetId.equals(assetId)",
+              "replace": "row.albumId.equals(sourceAlbumId) | row.assetId.equals(assetId)"
+            }
+          ],
+          "id": "delete-or",
+          "operator": "logical-operator"
+        },
+        {
+          "description": "deletes the asset from every album except the source album",
+          "edits": [
+            {
+              "find": "row.albumId.equals(sourceAlbumId) & row.assetId.equals(assetId)",
+              "replace": "row.albumId.equals(sourceAlbumId).not() & row.assetId.equals(assetId)"
+            }
+          ],
+          "id": "delete-other-albums",
+          "operator": "negate-condition"
+        },
+        {
+          "description": "keeps the first asset in the source album",
+          "edits": [
+            {
+              "find": "for (final assetId in assetIds) {",
+              "replace": "for (final assetId in assetIds.skip(1)) {"
+            }
+          ],
+          "id": "delete-one-asset-less",
+          "operator": "off-by-one"
+        },
+        {
+          "description": "inserts no rows into the target album",
+          "edits": [
+            {
+              "find": "final targetAlbumAssets = assetIds.map(",
+              "replace": "final targetAlbumAssets = assetIds.take(0).map("
+            }
+          ],
+          "id": "insert-nothing",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "inserts the rows back into the source album",
+          "edits": [
+            {
+              "find": "albumId: Value(targetAlbumId)",
+              "replace": "albumId: Value(sourceAlbumId)"
+            }
+          ],
+          "id": "insert-into-source",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "fails when an asset is already in the target album",
+          "edits": [
+            {
+              "find": "mode: InsertMode.insertOrIgnore",
+              "replace": "mode: InsertMode.insert"
+            }
+          ],
+          "id": "insert-without-ignore",
+          "operator": "replace-constant"
+        },
+        {
+          "description": "replaces an existing target thumbnail and leaves a missing one empty",
+          "edits": [
+            {
+              "find": "row.thumbnailAssetId.isNull()",
+              "replace": "row.thumbnailAssetId.isNotNull()"
+            }
+          ],
+          "id": "flip-thumbnail-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "sets the thumbnail of the source album instead of the target album",
+          "edits": [
+            {
+              "find": "row.id.equals(targetAlbumId) &",
+              "replace": "row.id.equals(sourceAlbumId) &"
+            }
+          ],
+          "id": "thumbnail-on-source",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "never gives an empty target album a thumbnail",
+          "edits": [
+            {
+              "find": "await targetAlbum.write(RemoteAlbumEntityCompanion(thumbnailAssetId: Value(assetIds.first)));",
+              "replace": ""
+            }
+          ],
+          "id": "drop-thumbnail-write",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "uses the last moved asset as the thumbnail instead of the first",
+          "edits": [
+            {
+              "find": "Value(assetIds.first)",
+              "replace": "Value(assetIds.last)"
+            }
+          ],
+          "id": "thumbnail-last-asset",
+          "operator": "off-by-one"
+        }
+      ],
+      "name": "local-repository",
+      "scope": "Future<void> moveAssets(",
+      "tests": ["test/medium/repositories/remote_album_repository_test.dart"]
+    },
+    {
+      "file": "lib/providers/infrastructure/remote_album.provider.dart",
+      "mutants": [
+        {
+          "description": "refreshes the albums only when nothing was moved",
+          "edits": [
+            {
+              "find": "if (movedIds.isNotEmpty) {",
+              "replace": "if (movedIds.isEmpty) {"
+            }
+          ],
+          "id": "flip-moved-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "never refreshes the source album in the state",
+          "edits": [
+            {
+              "find": "await _refreshAlbumInState(sourceAlbumId);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-source-refresh",
+          "operator": "remove-call"
+        },
+        {
+          "description": "never refreshes the target album in the state",
+          "edits": [
+            {
+              "find": "await _refreshAlbumInState(targetAlbumId);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-target-refresh",
+          "operator": "remove-call"
+        },
+        {
+          "description": "reports that nothing was moved",
+          "edits": [
+            {
+              "find": "return movedIds;",
+              "replace": "return <String>[];"
+            }
+          ],
+          "id": "return-nothing",
+          "operator": "empty-collection"
+        },
+        {
+          "description": "hides a failed request instead of rethrowing it",
+          "edits": [
+            {
+              "find": "rethrow;",
+              "replace": "return <String>[];"
+            }
+          ],
+          "id": "swallow-error",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "moves from the target album to the source album",
+          "edits": [
+            {
+              "find": "sourceAlbumId: sourceAlbumId, targetAlbumId: targetAlbumId,",
+              "replace": "sourceAlbumId: targetAlbumId, targetAlbumId: sourceAlbumId,"
+            }
+          ],
+          "id": "request-reversed",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "asks to move an empty asset list",
+          "edits": [
+            {
+              "find": "assetIds: assetIds,",
+              "replace": "assetIds: const [],"
+            }
+          ],
+          "id": "request-no-assets",
+          "operator": "empty-collection"
+        }
+      ],
+      "name": "notifier",
+      "scope": "Future<List<String>> moveAssets(",
+      "tests": ["test/unit/presentation/actions/move_to_album_action_test.dart"]
+    },
+    {
+      "file": "lib/presentation/actions/move_to_album.action.dart",
+      "mutants": [
+        {
+          "description": "moves from the picked album into the open album",
+          "edits": [
+            {
+              "find": "sourceAlbumId: albumId, targetAlbumId: targetAlbum.id,",
+              "replace": "sourceAlbumId: targetAlbum.id, targetAlbumId: albumId,"
+            }
+          ],
+          "id": "request-reversed",
+          "operator": "swap-argument"
+        },
+        {
+          "description": "shows nothing when the request fails",
+          "edits": [
+            {
+              "find": "toastService.error(translations.errors.error_moving_assets_to_album);",
+              "replace": ""
+            }
+          ],
+          "id": "drop-error-toast",
+          "operator": "remove-call"
+        },
+        {
+          "description": "adds the moved count to the requested count",
+          "edits": [
+            {
+              "find": "assetIds.length - movedIds.length;",
+              "replace": "assetIds.length + movedIds.length;"
+            }
+          ],
+          "id": "not-moved-count-plus",
+          "operator": "arithmetic-operator"
+        },
+        {
+          "description": "reports one more asset as not moved",
+          "edits": [
+            {
+              "find": "assetIds.length - movedIds.length;",
+              "replace": "assetIds.length - movedIds.length + 1;"
+            }
+          ],
+          "id": "not-moved-count-one-more",
+          "operator": "off-by-one"
+        },
+        {
+          "description": "reports one less asset as not moved",
+          "edits": [
+            {
+              "find": "assetIds.length - movedIds.length;",
+              "replace": "assetIds.length - movedIds.length - 1;"
+            }
+          ],
+          "id": "not-moved-count-one-less",
+          "operator": "off-by-one"
+        },
+        {
+          "description": "shows the requested count instead of the count the server moved",
+          "edits": [
+            {
+              "find": "assets_moved_to_album_count(count: movedIds.length)",
+              "replace": "assets_moved_to_album_count(count: assetIds.length)"
+            }
+          ],
+          "id": "moved-count-requested",
+          "operator": "replace-argument"
+        },
+        {
+          "description": "shows the nothing-moved error when assets were moved",
+          "edits": [
+            {
+              "find": "if (movedIds.isEmpty) {",
+              "replace": "if (movedIds.isNotEmpty) {"
+            }
+          ],
+          "id": "flip-nothing-moved-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "clears the selection and shows a success toast after nothing was moved",
+          "edits": [
+            {
+              "find": "toastService.error(notMovedMessage); return;",
+              "replace": "toastService.error(notMovedMessage);"
+            }
+          ],
+          "id": "nothing-moved-falls-through",
+          "operator": "remove-statement"
+        },
+        {
+          "description": "keeps the selection after a successful move",
+          "edits": [
+            {
+              "find": "clearSelection();",
+              "replace": ""
+            }
+          ],
+          "id": "keep-selection",
+          "operator": "remove-call"
+        },
+        {
+          "description": "shows the partial-failure toast when every asset was moved",
+          "edits": [
+            {
+              "find": "notMovedCount > 0 ?",
+              "replace": "notMovedCount >= 0 ?"
+            }
+          ],
+          "id": "partial-boundary",
+          "operator": "boundary"
+        },
+        {
+          "description": "shows the plain success toast for a partial move",
+          "edits": [
+            {
+              "find": "notMovedCount > 0 ?",
+              "replace": "notMovedCount <= 0 ?"
+            }
+          ],
+          "id": "flip-partial-check",
+          "operator": "flip-condition"
+        },
+        {
+          "description": "leaves the not-moved line out of the partial-failure toast",
+          "edits": [
+            {
+              "find": "'$movedMessage\\n$notMovedMessage' : movedMessage",
+              "replace": "movedMessage : movedMessage"
+            }
+          ],
+          "id": "partial-toast-without-failures",
+          "operator": "replace-argument"
+        },
+        {
+          "description": "shows the success message as an error toast",
+          "edits": [
+            {
+              "find": "toastService.success(",
+              "replace": "toastService.error("
+            }
+          ],
+          "id": "success-toast-as-error",
+          "operator": "replace-constant"
+        },
+        {
+          "description": "offers the source album as a move target",
+          "edits": [
+            {
+              "find": "excludedAlbumIds: {albumId}",
+              "replace": "excludedAlbumIds: const {}"
+            }
+          ],
+          "id": "offer-source-album",
+          "operator": "empty-collection",
+          "scope": "Future<RemoteAlbum?> _pickTargetAlbum("
+        },
+        {
+          "description": "hides the action when remote assets are selected",
+          "edits": [
+            {
+              "find": "if (assetIds.isEmpty) {",
+              "replace": "if (assetIds.isNotEmpty) {"
+            }
+          ],
+          "id": "flip-selection-check",
+          "operator": "flip-condition",
+          "scope": "final _stateProvider = Provider.family.autoDispose<List<String>?, _MoveScope>("
+        },
+        {
+          "description": "treats a selection with foreign assets as owned",
+          "edits": [
+            {
+              "find": "assets.owned(userId).length == assets.length",
+              "replace": "assets.owned(userId).length != assets.length"
+            }
+          ],
+          "id": "ownership-not-equal",
+          "operator": "swap-equality",
+          "scope": "final _stateProvider = Provider.family.autoDispose<List<String>?, _MoveScope>("
+        },
+        {
+          "description": "requires owning both the album and every selected asset",
+          "edits": [
+            {
+              "find": "scope.ownsAlbum || ownsSelectedAssets ? assetIds : null",
+              "replace": "scope.ownsAlbum && ownsSelectedAssets ? assetIds : null"
+            }
+          ],
+          "id": "ownership-and",
+          "operator": "logical-operator",
+          "scope": "final _stateProvider = Provider.family.autoDispose<List<String>?, _MoveScope>("
+        },
+        {
+          "description": "offers the action without owning the album or the assets",
+          "edits": [
+            {
+              "find": "return scope.ownsAlbum || ownsSelectedAssets ? assetIds : null;",
+              "replace": "return assetIds;"
+            }
+          ],
+          "id": "ownership-ignored",
+          "operator": "remove-condition",
+          "scope": "final _stateProvider = Provider.family.autoDispose<List<String>?, _MoveScope>("
+        }
+      ],
+      "name": "action",
+      "scope": "Future<void> _move(",
+      "tests": ["test/unit/presentation/actions/move_to_album_action_test.dart"]
+    }
+  ],
+  "thresholds": {
+    "break": 85
+  },
+  "timeoutSeconds": 600
+}
