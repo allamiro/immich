@@ -1568,7 +1568,10 @@ describe(AlbumService.name, () => {
       );
       mocks.access.album.checkSharedAlbumAccess.mockImplementation((_, albumIds) => Promise.resolve(albumIds));
       mocks.album.getById.mockResolvedValueOnce(getForAlbum(source)).mockResolvedValueOnce(getForAlbum(target));
-      mocks.album.getAssetIds.mockResolvedValueOnce(new Set([asset.id])).mockResolvedValueOnce(new Set([asset.id]));
+      const albumAssetIds: Record<string, string[]> = { [source.id]: [asset.id], [target.id]: [asset.id] };
+      mocks.album.getAssetIds.mockImplementation((albumId, assetIds) =>
+        Promise.resolve(new Set(assetIds.filter((assetId) => albumAssetIds[albumId]?.includes(assetId)))),
+      );
 
       await expect(
         sut.moveAssets(AuthFactory.create(owner), source.id, { targetAlbumId: target.id, assetIds: [asset.id] }),
