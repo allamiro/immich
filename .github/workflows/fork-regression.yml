@@ -77,7 +77,7 @@ env:
   SERVER_MEDIUM_ROLLBACK_TEST: untouched when removing from the source album fails
   WEB_MOVE_TESTS: 5
   MOBILE_MOVE_TESTS: 27
-  E2E_MOVE_TESTS: 13
+  E2E_MOVE_TESTS: 15
 
 jobs:
   openapi:
