@@ -70,7 +70,7 @@ jobs:
           source_ref="${source_ref#refs/tags/}"
           source_commit=$(git rev-parse HEAD)
           ref_tag=$(sanitize_tag "$source_ref")
-          image="ghcr.io/${OWNER,,}/immich-allamiro"
+          image="ghcr.io/${OWNER,,}/immich-server-allamiro"
 
           tags=("$ref_tag" "${source_commit::7}")
           publish_latest=false
