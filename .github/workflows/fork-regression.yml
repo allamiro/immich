@@ -1,0 +1,451 @@
+# Regression tests for the fork's "Move to album" feature (PUT /albums/:id/assets/move).
+#
+# An upstream merge can break the feature without a merge conflict, for example when upstream renames
+# something the feature calls. Fork Sync Upstream therefore calls this workflow after every merge and
+# only tags a release or starts builds when it and Fork Mutation Test are green.
+#
+# Jobs, each reported on its own:
+#   OpenAPI clients  regenerates the spec, the TypeScript SDK and the Dart client with `mise //:open-api`,
+#                    fails when the committed spec or SDK differ and when the move operation or its DTO is gone
+#   Server           lint, type check, the album unit specs and the album medium spec, which runs against a
+#                    real Postgres that the medium suite starts itself through testcontainers
+#   Web              SDK build, svelte-check and tsc, eslint on the feature files, the album query spec
+#   Mobile           pinned Flutter from mobile/mise.toml, codegen including translations, the Dart analyzer,
+#                    the move tests and the OpenAPI patch coverage test, which compares the fork's spec with
+#                    the spec on upstream main so that only the fork's own API additions are checked
+#   End to end       the album API spec against the docker compose stack from e2e/
+#
+# Every test step also checks that the move tests still exist and ran, so deleting or skipping them fails
+# the job instead of passing with fewer tests. The expected counts are the env values below.
+
+name: Fork Regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to test. Empty tests the branch the workflow is started from.
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch, tag or commit to test. Empty tests the ref of the calling workflow.
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - 'server/src/controllers/album.controller*.ts'
+      - 'server/src/services/album.service*.ts'
+      - 'server/src/repositories/album.repository.ts'
+      - 'server/src/dtos/album.dto.ts'
+      - 'server/src/queries/album.repository.sql'
+      - 'server/test/medium/specs/services/album.service.spec.ts'
+      - 'web/src/lib/queries/album.query*.ts'
+      - 'web/src/lib/services/asset.service.ts'
+      - 'web/src/lib/modals/AssetMoveToAlbumModal.svelte'
+      - 'web/src/lib/modals/AlbumPickerModal.svelte'
+      - 'web/src/lib/components/asset-viewer/AlbumListItem.svelte'
+      - 'web/src/routes/(user)/albums/**'
+      - 'mobile/lib/**/*album*'
+      - 'mobile/test/**/*album*'
+      - 'e2e/src/specs/server/api/album.e2e-spec.ts'
+      - 'open-api/immich-openapi-specs.json'
+      - 'packages/sdk/src/fetch-client.ts'
+      - 'i18n/en.json'
+      - '.github/fork/**'
+      - '.github/workflows/fork-regression.yml'
+
+concurrency:
+  group: fork-regression-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MOVE_OPERATION_ID: moveAssetsToAlbum
+  MOVE_DTO: AlbumMoveAssetsDto
+  MOVE_ROUTE: /albums/{id}/assets/move
+  UPSTREAM_SPEC_URL: https://raw.githubusercontent.com/immich-app/immich/main/open-api/immich-openapi-specs.json
+  SERVER_UNIT_MOVE_TESTS: 12
+  SERVER_CONTROLLER_MOVE_TESTS: 2
+  SERVER_MEDIUM_MOVE_TESTS: 7
+  SERVER_MEDIUM_ROLLBACK_TEST: untouched when removing from the source album fails
+  WEB_MOVE_TESTS: 5
+  MOBILE_MOVE_TESTS: 27
+  E2E_MOVE_TESTS: 13
+
+jobs:
+  openapi:
+    name: OpenAPI clients
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Regenerate the spec and the clients
+        id: generate
+        run: mise run //:open-api
+
+      - name: Check the committed spec and SDK are up to date
+        if: ${{ !cancelled() && steps.generate.outcome == 'success' }}
+        run: |
+          drift=$(git status --porcelain -- open-api/immich-openapi-specs.json packages/sdk/src)
+          if [[ -n "$drift" ]]; then
+            echo "::error::The committed OpenAPI spec or TypeScript SDK differ from what the server generates. Run 'mise //:open-api' and commit the result."
+            echo "$drift"
+            git diff --stat -- open-api/immich-openapi-specs.json packages/sdk/src
+            git diff -- open-api/immich-openapi-specs.json packages/sdk/src | head -n 200
+            exit 1
+          fi
+
+      - name: Check the move operation is still in the spec and the clients
+        if: ${{ !cancelled() && steps.generate.outcome == 'success' }}
+        run: |
+          status=0
+          spec=open-api/immich-openapi-specs.json
+          sdk=packages/sdk/src/fetch-client.ts
+
+          if ! jq -e --arg route "$MOVE_ROUTE" --arg operation "$MOVE_OPERATION_ID" \
+            '.paths[$route].put.operationId == $operation' "$spec" > /dev/null; then
+            echo "::error::${spec} has no PUT ${MOVE_ROUTE} with operationId ${MOVE_OPERATION_ID}."
+            status=1
+          fi
+          if ! jq -e --arg dto "$MOVE_DTO" '.components.schemas[$dto].required | index("targetAlbumId") and index("assetIds")' "$spec" > /dev/null; then
+            echo "::error::${spec} has no ${MOVE_DTO} schema with targetAlbumId and assetIds."
+            status=1
+          fi
+          if ! grep --quiet --extended-regexp "export function ${MOVE_OPERATION_ID}\(" "$sdk"; then
+            echo "::error::${sdk} does not export ${MOVE_OPERATION_ID}."
+            status=1
+          fi
+          if ! grep --quiet --extended-regexp "export type ${MOVE_DTO} = " "$sdk"; then
+            echo "::error::${sdk} does not export the type ${MOVE_DTO}."
+            status=1
+          fi
+
+          dart_client=''
+          for candidate in mobile/generated/openapi mobile/openapi; do
+            if [[ -f "${candidate}/lib/api/albums_api.dart" ]]; then
+              dart_client="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$dart_client" ]]; then
+            echo "::error::The generated Dart client was not found under mobile/generated/openapi or mobile/openapi."
+            status=1
+          elif ! grep --quiet --extended-regexp "${MOVE_OPERATION_ID}\(" "${dart_client}/lib/api/albums_api.dart" ||
+            ! grep --quiet --recursive --extended-regexp "class ${MOVE_DTO} " "${dart_client}/lib/model"; then
+            echo "::error::The Dart client in ${dart_client} has no ${MOVE_OPERATION_ID} or no ${MOVE_DTO}."
+            status=1
+          fi
+          exit "$status"
+
+  server:
+    name: Server
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Install dependencies
+        id: install
+        run: |
+          mise run //server:install
+          mise run //:plugins
+          mise run //packages/plugin-core:build
+
+      - name: Lint
+        run: mise run //server:lint
+
+      - name: Type check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: mise run //server:check
+
+      - name: Run the album unit specs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          mise run //server:test --run \
+            src/services/album.service.spec.ts src/controllers/album.controller.spec.ts \
+            --reporter=default --reporter=json --outputFile.json="${RUNNER_TEMP}/server-unit.json"
+
+      - name: Check the move unit tests ran
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          status=0
+          .github/fork/assert-vitest-tests.sh "${RUNNER_TEMP}/server-unit.json" moveAssets "$SERVER_UNIT_MOVE_TESTS" || status=1
+          .github/fork/assert-vitest-tests.sh "${RUNNER_TEMP}/server-unit.json" 'PUT /albums/:id/assets/move' "$SERVER_CONTROLLER_MOVE_TESTS" || status=1
+          exit "$status"
+
+      - name: Run the album medium spec on Postgres
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          mise run //server:test-medium --run test/medium/specs/services/album.service.spec.ts \
+            --reporter=default --reporter=json --outputFile.json="${RUNNER_TEMP}/server-medium.json"
+
+      - name: Check the move medium tests and the rollback case ran
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          .github/fork/assert-vitest-tests.sh "${RUNNER_TEMP}/server-medium.json" moveAssets \
+            "$SERVER_MEDIUM_MOVE_TESTS" "$SERVER_MEDIUM_ROLLBACK_TEST"
+
+  web:
+    name: Web
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WEB_FEATURE_FILES: |
+        src/lib/queries/album.query.ts
+        src/lib/queries/album.query.spec.ts
+        src/lib/services/asset.service.ts
+        src/lib/modals/AssetMoveToAlbumModal.svelte
+        src/lib/modals/AlbumPickerModal.svelte
+        src/lib/components/asset-viewer/AlbumListItem.svelte
+        src/routes/(user)/albums/[albumId=id]/[[photos=photos]]/[[assetId=id]]/+page.svelte
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Build the SDK and install dependencies
+        id: install
+        run: |
+          mise run //:sdk:install
+          mise run //:sdk:build
+          mise run //web:install
+
+      - name: Run svelte-check and tsc
+        run: mise run //web:check
+
+      - name: Lint the feature files
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: web
+        run: |
+          files=()
+          missing=0
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            if [[ -f "$file" ]]; then
+              files+=("$file")
+            else
+              echo "::error::web/${file} does not exist any more. Update WEB_FEATURE_FILES in fork-regression.yml if it moved."
+              missing=1
+            fi
+          done <<< "$WEB_FEATURE_FILES"
+          pnpm exec eslint --max-warnings 0 "${files[@]}"
+          exit "$missing"
+
+      - name: Run the album query spec
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          mise run //web:test --run src/lib/queries/album.query.spec.ts \
+            --reporter=default --reporter=json --outputFile.json="${RUNNER_TEMP}/web-unit.json"
+
+      - name: Check the move tests ran
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: .github/fork/assert-vitest-tests.sh "${RUNNER_TEMP}/web-unit.json" moveAssetsToAlbumMutation "$WEB_MOVE_TESTS"
+
+  mobile:
+    name: Mobile
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Restore Rust cache
+        id: rust-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: fork-mobile-rust-${{ runner.os }}-${{ hashFiles('native/crates/native_core_ffi/rust-toolchain.toml', 'mobile/mise.lock', 'native/Cargo.lock') }}
+          restore-keys: |
+            fork-mobile-rust-${{ runner.os }}-
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./mobile
+
+      - name: Install dependencies
+        id: install
+        run: |
+          mise run //mobile:install:ci
+          (cd mobile/packages/ui && flutter pub get --enforce-lockfile)
+
+      - name: Generate code and translations
+        id: codegen
+        run: mise run //mobile:codegen
+
+      - name: Analyze
+        run: mise run //mobile:analyze:dart
+
+      - name: Run the move tests
+        if: ${{ !cancelled() && steps.codegen.outcome == 'success' }}
+        working-directory: mobile
+        run: |
+          files=()
+          while IFS= read -r file; do
+            files+=("$file")
+          done < <(grep --recursive --files-with-matches --extended-regexp 'moveAssets|MoveToAlbum' test --include='*_test.dart' | sort)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No test under mobile/test mentions moveAssets or MoveToAlbum."
+            exit 1
+          fi
+          printf 'Running %s\n' "${files[@]}"
+
+          status=0
+          flutter test --no-pub --file-reporter "json:${RUNNER_TEMP}/mobile-move-tests.json" "${files[@]}" || status=1
+
+          read -r total passed < <(jq --slurp --raw-output '
+            (map(select(.type == "testStart") | {key: (.test.id | tostring), value: .test.name}) | from_entries) as $names
+            | [.[] | select(.type == "testDone" and .hidden == false) | {name: $names[.testID | tostring], result, skipped}]
+            | map(select(.name | test("moveAssets|MoveToAlbum")))
+            | [length, (map(select(.result == "success" and (.skipped | not))) | length)]
+            | @tsv' "${RUNNER_TEMP}/mobile-move-tests.json")
+          echo "Move tests: ${total}, passed: ${passed}."
+          if ((passed < MOBILE_MOVE_TESTS)); then
+            echo "::error::Only ${passed} mobile move test(s) passed, expected at least ${MOBILE_MOVE_TESTS}. Tests failed or were removed, renamed or skipped."
+            status=1
+          fi
+          exit "$status"
+
+      - name: Check required response fields have a compatibility patch
+        if: ${{ !cancelled() && steps.codegen.outcome == 'success' }}
+        working-directory: mobile
+        env:
+          OPENAPI_BASE_SPEC: ${{ runner.temp }}/base-spec.json
+          OPENAPI_REVISION_SPEC: ../open-api/immich-openapi-specs.json
+        run: |
+          curl --fail --silent --show-error --location --retry 3 "$UPSTREAM_SPEC_URL" --output "$OPENAPI_BASE_SPEC"
+          flutter test --no-pub test/openapi_patches_coverage.dart 2>&1 | tee "${RUNNER_TEMP}/patch-coverage.log"
+          if grep --quiet 'All tests skipped' "${RUNNER_TEMP}/patch-coverage.log"; then
+            echo "::error::The patch coverage test was skipped, the spec paths were not picked up."
+            exit 1
+          fi
+
+      - name: Save Rust cache
+        if: ${{ !cancelled() && github.ref_name == github.event.repository.default_branch && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+
+  e2e:
+    name: End to end
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout with the test assets submodule
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Build the SDK and CLI and install dependencies
+        run: mise run //e2e:ci-setup
+
+      - name: Start the stack
+        id: stack
+        working-directory: e2e
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if docker compose up --detach --build --renew-anon-volumes --force-recreate --remove-orphans --wait --wait-timeout 300 2>&1 |
+              tee "${RUNNER_TEMP}/docker-compose-up.log"; then
+              exit 0
+            fi
+            if ! grep --quiet --ignore-case --extended-regexp 'toomanyrequests|retry-after' "${RUNNER_TEMP}/docker-compose-up.log"; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
+          exit 1
+
+      - name: Run the album API spec
+        working-directory: e2e
+        env:
+          VITEST_DISABLE_DOCKER_SETUP: true
+        run: |
+          pnpm exec vitest --run src/specs/server/api/album.e2e-spec.ts \
+            --reporter=default --reporter=json --outputFile.json="${RUNNER_TEMP}/e2e-album.json"
+
+      - name: Check the move tests ran
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        run: .github/fork/assert-vitest-tests.sh "${RUNNER_TEMP}/e2e-album.json" 'PUT /albums/:id/assets/move' "$E2E_MOVE_TESTS"
+
+      - name: Capture the stack logs
+        if: ${{ always() }}
+        working-directory: e2e
+        run: docker compose logs --no-color > "${RUNNER_TEMP}/e2e-docker-compose-logs.txt" || true
+
+      - name: Upload the stack logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fork-regression-e2e-docker-logs
+          path: ${{ runner.temp }}/e2e-docker-compose-logs.txt
+          if-no-files-found: ignore
+
+      - name: Stop the stack
+        if: ${{ always() }}
+        working-directory: e2e
+        run: docker compose down --volumes --remove-orphans || true
