@@ -962,6 +962,12 @@ export type BulkIdResponseDto = {
     /** Whether operation succeeded */
     success: boolean;
 };
+export type AlbumMoveAssetsDto = {
+    /** Asset IDs */
+    assetIds: string[];
+    /** Target album ID */
+    targetAlbumId: string;
+};
 export type MapMarkerResponseDto = {
     /** City name */
     city: string | null;
@@ -4591,6 +4597,22 @@ export function addAssetsToAlbum({ id, bulkIdsDto }: {
         ...opts,
         method: "PUT",
         body: bulkIdsDto
+    })));
+}
+/**
+ * Move assets to another album
+ */
+export function moveAssetsToAlbum({ id, albumMoveAssetsDto }: {
+    id: string;
+    albumMoveAssetsDto: AlbumMoveAssetsDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: BulkIdResponseDto[];
+    }>(`/albums/${encodeURIComponent(id)}/assets/move`, oazapfts.json({
+        ...opts,
+        method: "PUT",
+        body: albumMoveAssetsDto
     })));
 }
 /**

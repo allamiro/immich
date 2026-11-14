@@ -432,6 +432,7 @@
           {/if}
 
           <ActionMenuItem action={Actions.Tag} />
+          <ActionMenuItem action={Actions.MoveToAlbum} />
           <ActionMenuItem action={Actions.RemoveFromAlbum} />
           {#if assetMultiSelectManager.isAllUserOwned}
             <DeleteAssets menuItem onAssetDelete={handleRemoveAssets} onUndoDelete={handleUndoRemoveAssets} />

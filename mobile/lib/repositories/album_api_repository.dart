@@ -69,6 +69,30 @@ class AlbumApiRepository extends ApiRepository {
     return (added: added, failed: failed);
   }
 
+  Future<({List<String> moved, List<String> failed})> moveAssets(
+    String sourceAlbumId,
+    String targetAlbumId,
+    Iterable<String> assetIds,
+  ) async {
+    final response = await checkNull(
+      _api.moveAssetsToAlbum(
+        sourceAlbumId,
+        AlbumMoveAssetsDto(targetAlbumId: targetAlbumId, assetIds: assetIds.toList()),
+      ),
+    );
+    final List<String> moved = [];
+    final List<String> failed = [];
+    for (final dto in response) {
+      if (dto.success) {
+        moved.add(dto.id);
+      } else {
+        failed.add(dto.id);
+      }
+    }
+
+    return (moved: moved, failed: failed);
+  }
+
   Future<RemoteAlbum> updateAlbum(
     String albumId,
     UserDto owner, {

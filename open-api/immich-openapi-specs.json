@@ -2770,6 +2770,71 @@
         "x-immich-state": "Stable"
       }
     },
+    "/albums/{id}/assets/move": {
+      "put": {
+        "description": "Move multiple assets from a specific album by its ID to another album. The assets are added to the target album and removed from the source album in a single transaction. Requires the albumAsset.create permission in addition to albumAsset.delete.",
+        "operationId": "moveAssetsToAlbum",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumMoveAssetsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BulkIdResponseDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Move assets to another album",
+        "tags": [
+          "Albums"
+        ],
+        "x-immich-history": [
+          {
+            "state": "Added",
+            "version": "v3"
+          }
+        ],
+        "x-immich-permission": "albumAsset.delete"
+      }
+    },
     "/albums/{id}/map-markers": {
       "get": {
         "description": "Retrieve map marker information for a specific album by its ID.",
@@ -20170,6 +20235,30 @@
         },
         "required": [
           "isOnboarded"
+        ],
+        "type": "object"
+      },
+      "AlbumMoveAssetsDto": {
+        "properties": {
+          "assetIds": {
+            "description": "Asset IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "targetAlbumId": {
+            "description": "Target album ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assetIds",
+          "targetAlbumId"
         ],
         "type": "object"
       },

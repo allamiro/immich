@@ -15,7 +15,7 @@
     selected: boolean;
     multiSelected?: boolean;
     onAlbumClick: () => void;
-    onMultiSelect: () => void;
+    onMultiSelect?: () => void;
   }
 
   let {
@@ -52,7 +52,7 @@
   const handleMultiSelectClicked = (e?: MouseEvent) => {
     e?.stopPropagation();
     e?.preventDefault();
-    onMultiSelect();
+    onMultiSelect?.();
   };
 
   let usingMobileDevice = $derived(mediaQueryManager.pointerCoarse);
@@ -87,6 +87,9 @@
       let didPress = false;
       const start = () => {
         didPress = false;
+        if (!onMultiSelect) {
+          return;
+        }
         // 350ms for longpress. For reference: iOS uses 500ms for default long press, or 200ms for fast long press.
         timer = setTimeout(() => {
           onLongPress();
@@ -152,7 +155,7 @@
     </span>
   </button>
 
-  {#if mouseOver || multiSelected}
+  {#if onMultiSelect && (mouseOver || multiSelected)}
     <button
       type="button"
       onclick={handleMultiSelectClicked}

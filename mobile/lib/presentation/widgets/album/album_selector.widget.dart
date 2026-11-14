@@ -32,8 +32,14 @@ typedef AlbumSelectorCallback = void Function(RemoteAlbum album);
 class AlbumSelector extends ConsumerStatefulWidget {
   final AlbumSelectorCallback onAlbumSelected;
   final Function? onKeyboardExpanded;
+  final Set<String> excludedAlbumIds;
 
-  const AlbumSelector({super.key, required this.onAlbumSelected, this.onKeyboardExpanded});
+  const AlbumSelector({
+    super.key,
+    required this.onAlbumSelected,
+    this.onKeyboardExpanded,
+    this.excludedAlbumIds = const {},
+  });
 
   @override
   ConsumerState<AlbumSelector> createState() => _AlbumSelectorState();
@@ -120,9 +126,14 @@ class _AlbumSelectorState extends ConsumerState<AlbumSelector> {
   }
 
   Future<void> sortAlbums() async {
+    final selectableAlbums = ref
+        .read(remoteAlbumProvider)
+        .albums
+        .where((album) => !widget.excludedAlbumIds.contains(album.id))
+        .toList();
     final sorted = await ref
         .read(remoteAlbumProvider.notifier)
-        .sortAlbums(ref.read(remoteAlbumProvider).albums, sort.mode, isReverse: sort.isReverse);
+        .sortAlbums(selectableAlbums, sort.mode, isReverse: sort.isReverse);
 
     if (!mounted) {
       return;
@@ -775,6 +786,65 @@ class AddToAlbumHeader extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), // remove internal padding
                 minimumSize: Size.zero, // allow shrinking
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap, // remove extra height
+              ),
+              onPressed: onCreateAlbum,
+              icon: Icon(Icons.add, color: context.primaryColor),
+              label: Text(
+                context.t.common_create_new_album,
+                style: TextStyle(color: context.primaryColor, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class MoveToAlbumHeader extends ConsumerWidget {
+  const MoveToAlbumHeader({super.key, required this.onAlbumCreated});
+
+  final AlbumSelectorCallback onAlbumCreated;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    Future<void> onCreateAlbum() async {
+      final albumName = await showDialog<String?>(context: context, builder: (context) => const NewAlbumNameModal());
+      if (albumName == null || albumName.isEmpty || !context.mounted) {
+        return;
+      }
+
+      RemoteAlbum? album;
+      try {
+        album = await ref.read(remoteAlbumProvider.notifier).createAlbum(title: albumName);
+      } catch (_) {
+        album = null;
+      }
+
+      if (!context.mounted) {
+        return;
+      }
+
+      if (album == null) {
+        ImmichToast.show(context: context, toastType: ToastType.error, msg: context.t.errors.failed_to_create_album);
+        return;
+      }
+
+      onAlbumCreated(album);
+    }
+
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      sliver: SliverToBoxAdapter(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(context.t.move_to_album, style: context.textTheme.titleSmall),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
               onPressed: onCreateAlbum,
               icon: Icon(Icons.add, color: context.primaryColor),

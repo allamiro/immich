@@ -12,6 +12,7 @@ import 'package:immich_mobile/presentation/actions/edit_datetime.action.dart';
 import 'package:immich_mobile/presentation/actions/edit_location.action.dart';
 import 'package:immich_mobile/presentation/actions/favorite.action.dart';
 import 'package:immich_mobile/presentation/actions/lock.action.dart';
+import 'package:immich_mobile/presentation/actions/move_to_album.action.dart';
 import 'package:immich_mobile/presentation/actions/remove_from_album.action.dart';
 import 'package:immich_mobile/presentation/actions/set_album_cover.action.dart';
 import 'package:immich_mobile/presentation/actions/share.action.dart';
@@ -98,6 +99,9 @@ class _RemoteAlbumBottomSheetState extends ConsumerState<RemoteAlbumBottomSheet>
           .new(action: StackAction(source: .timeline)),
         ],
         const .new(action: CleanupLocalAction(source: .timeline)),
+        ActionColumnButton(
+          action: MoveToAlbumAction(source: .timeline, albumId: widget.album.id, ownsAlbum: ownsAlbum),
+        ),
         if (ownsAlbum) ...[
           ActionColumnButton(
             action: RemoveFromAlbumAction(source: .timeline, albumId: widget.album.id),
