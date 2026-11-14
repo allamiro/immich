@@ -10,6 +10,7 @@ import {
   VectorIndex,
   VideoCodec,
 } from 'src/enum.js';
+import { withoutForkSuffix } from 'src/utils/version.js';
 
 export const IMMICH_SERVER_START = 'Immich Server is listening';
 
@@ -53,6 +54,7 @@ const basePath = dirname(import.meta.filename);
 const packageFile = join(basePath, '..', 'package.json');
 const { version } = JSON.parse(readFileSync(packageFile, 'utf8'));
 export const serverVersion = new SemVer(version);
+export const upstreamServerVersion = withoutForkSuffix(serverVersion);
 
 export const citiesFile = 'cities500.txt';
 export const reverseGeocodeMaxDistance = 25_000;

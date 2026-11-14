@@ -7,7 +7,7 @@ import { jwtVerify } from 'jose';
 import { readFileSync } from 'node:fs';
 import { IncomingHttpHeaders } from 'node:http';
 import { basename } from 'node:path';
-import { serverVersion } from 'src/constants.js';
+import { upstreamServerVersion } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import {
   MaintenanceAuthDto,
@@ -120,7 +120,7 @@ export class MaintenanceWorkerService {
 
   /** {@link _VersionService.getVersion} */
   getVersion() {
-    return ServerVersionResponseDto.fromSemVer(serverVersion);
+    return ServerVersionResponseDto.fromSemVer(upstreamServerVersion);
   }
 
   ping(): ServerPingResponse {

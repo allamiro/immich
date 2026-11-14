@@ -5,7 +5,7 @@ import path, { basename } from 'node:path';
 import { Duplex, PassThrough, Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { coerce, satisfies } from 'semver';
-import { serverVersion } from 'src/constants.js';
+import { upstreamServerVersion } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { OnEvent, OnJob } from 'src/decorators.js';
 import { DatabaseBackupListResponseDto } from 'src/dtos/database-backup.dto.js';
@@ -232,7 +232,7 @@ export class DatabaseBackupService {
 
     this.logger.log(`Database Backup Starting. Database Version: ${databaseMajorVersion}`);
 
-    const filename = `${filenamePrefix}immich-db-backup-${DateTime.now().toFormat("yyyyLLdd'T'HHmmss")}-v${serverVersion.toString()}-pg${databaseVersion.split(' ', 1)[0]}.sql.gz`;
+    const filename = `${filenamePrefix}immich-db-backup-${DateTime.now().toFormat("yyyyLLdd'T'HHmmss")}-v${upstreamServerVersion.toString()}-pg${databaseVersion.split(' ', 1)[0]}.sql.gz`;
     const backupFilePath = path.join(StorageCore.getBaseFolder(StorageFolder.Backups), filename);
     const temporaryFilePath = `${backupFilePath}.tmp`;
 

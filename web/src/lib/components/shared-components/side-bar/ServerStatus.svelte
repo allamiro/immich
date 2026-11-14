@@ -21,7 +21,7 @@
   const info = $derived(queries.about.data);
   const versions = $derived(queries.history.data ?? []);
   let isMain = $derived(info?.sourceRef === 'main' && info.repository === 'immich-app/immich');
-  let version = $derived($serverVersion ? semverToName($serverVersion) : null);
+  let version = $derived($serverVersion ? (info?.version ?? semverToName($serverVersion)) : null);
 
   const getReleaseInfo = (release?: ReleaseEventV1) => {
     if (!release || !release?.isAvailable || !authManager.user.isAdmin) {

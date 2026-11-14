@@ -12,7 +12,7 @@ import { cleanupOpenApiDoc } from 'nestjs-zod';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import picomatch from 'picomatch';
-import { CLIP_MODEL_INFO, JOBS_ASSET_PAGINATION_SIZE, endpointTags, serverVersion } from 'src/constants.js';
+import { CLIP_MODEL_INFO, JOBS_ASSET_PAGINATION_SIZE, endpointTags, upstreamServerVersion } from 'src/constants.js';
 import { extraModels } from 'src/decorators.js';
 import { SystemConfig } from 'src/dtos/config.dto.js';
 import { ApiCustomExtension, ImmichCookie, ImmichHeader, MetadataKey } from 'src/enum.js';
@@ -321,7 +321,7 @@ export const useSwagger = (app: INestApplication, { write }: { write: boolean })
   const builder = new DocumentBuilder()
     .setTitle('Immich')
     .setDescription('Immich API')
-    .setVersion(serverVersion.toString())
+    .setVersion(upstreamServerVersion.toString())
     .addBearerAuth({
       type: 'http',
       scheme: 'Bearer',

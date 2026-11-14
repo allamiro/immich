@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DateTime } from 'luxon';
 import { SemVer, diff, intersects, lt } from 'semver';
-import { serverVersion } from 'src/constants.js';
+import { serverVersion, upstreamServerVersion } from 'src/constants.js';
 import { OnEvent, OnJob } from 'src/decorators.js';
 import { ReleaseEventV1, ReleaseType, ServerVersionResponseDto } from 'src/dtos/server.dto.js';
 import {
@@ -25,13 +25,13 @@ const asNotification = (
 ): ReleaseEventV1 => {
   return {
     // can't use gt because it's broken for release candidates F https://github.com/npm/node-semver/issues/483
-    isAvailable: intersects(`>${serverVersion}`, releaseVersion, {
+    isAvailable: intersects(`>${upstreamServerVersion}`, releaseVersion, {
       includePrerelease: channel === ReleaseChannel.ReleaseCandidate,
     }),
     checkedAt,
-    serverVersion: ServerVersionResponseDto.fromSemVer(serverVersion),
+    serverVersion: ServerVersionResponseDto.fromSemVer(upstreamServerVersion),
     releaseVersion: ServerVersionResponseDto.fromSemVer(new SemVer(releaseVersion)),
-    type: diff(serverVersion, releaseVersion) as ReleaseType,
+    type: diff(upstreamServerVersion, releaseVersion) as ReleaseType,
   };
 };
 
@@ -79,7 +79,7 @@ export class VersionService extends BaseService {
   }
 
   getVersion() {
-    return ServerVersionResponseDto.fromSemVer(serverVersion);
+    return ServerVersionResponseDto.fromSemVer(upstreamServerVersion);
   }
 
   getVersionHistory() {
@@ -129,7 +129,7 @@ export class VersionService extends BaseService {
 
       // can't use gt because it's broken for release candidates F https://github.com/npm/node-semver/issues/483
       if (
-        intersects(`>${serverVersion}`, releaseVersion, {
+        intersects(`>${upstreamServerVersion}`, releaseVersion, {
           includePrerelease: newVersionCheck.channel === ReleaseChannel.ReleaseCandidate,
         })
       ) {
@@ -149,7 +149,7 @@ export class VersionService extends BaseService {
     this.websocketRepository.clientSend(
       'on_server_version',
       userId,
-      ServerVersionResponseDto.fromSemVer(serverVersion),
+      ServerVersionResponseDto.fromSemVer(upstreamServerVersion),
     );
 
     const { newVersionCheck } = await this.getConfig({ withCache: true });

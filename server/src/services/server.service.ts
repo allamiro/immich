@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { serverVersion } from 'src/constants.js';
+import { serverVersion, upstreamServerVersion } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { OnEvent } from 'src/decorators.js';
 import { LicenseKeyDto, LicenseResponseDto } from 'src/dtos/license.dto.js';
@@ -47,7 +47,7 @@ export class ServerService extends BaseService {
 
     return {
       version,
-      versionUrl: `https://github.com/immich-app/immich/releases/tag/${version}`,
+      versionUrl: `https://github.com/immich-app/immich/releases/tag/v${upstreamServerVersion}`,
       licensed: !!licensed,
       ...buildMetadata,
       ...buildVersions,
@@ -55,7 +55,7 @@ export class ServerService extends BaseService {
   }
 
   getApkLinks(): ServerApkLinksDto {
-    const baseUrl = `https://github.com/immich-app/immich/releases/download/v${serverVersion.toString()}`;
+    const baseUrl = `https://github.com/immich-app/immich/releases/download/v${upstreamServerVersion.toString()}`;
     return {
       arm64v8a: `${baseUrl}/app-arm64-v8a-release.apk`,
       armeabiv7a: `${baseUrl}/app-armeabi-v7a-release.apk`,
