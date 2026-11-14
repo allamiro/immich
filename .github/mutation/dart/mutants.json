@@ -477,7 +477,10 @@
       ],
       "name": "notifier",
       "scope": "Future<List<String>> moveAssets(",
-      "tests": ["test/unit/presentation/actions/move_to_album_action_test.dart"]
+      "tests": [
+        "test/unit/presentation/actions/move_to_album_action_test.dart",
+        "test/providers/infrastructure/remote_album_provider_test.dart"
+      ]
     },
     {
       "file": "lib/presentation/actions/move_to_album.action.dart",
