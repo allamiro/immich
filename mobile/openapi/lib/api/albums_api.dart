@@ -607,6 +607,71 @@ class AlbumsApi {
     return null;
   }
 
+  /// Move assets to another album
+  ///
+  /// Move multiple assets from a specific album by its ID to another album. The assets are added to the target album and removed from the source album in a single transaction. Requires the albumAsset.create permission in addition to albumAsset.delete.
+  ///
+  /// Note: This method returns the HTTP [Response].
+  ///
+  /// Parameters:
+  ///
+  /// * [String] id (required):
+  ///
+  /// * [AlbumMoveAssetsDto] albumMoveAssetsDto (required):
+  Future<Response> moveAssetsToAlbumWithHttpInfo(String id, AlbumMoveAssetsDto albumMoveAssetsDto, { Future<void>? abortTrigger, }) async {
+    // ignore: prefer_const_declarations
+    final apiPath = r'/albums/{id}/assets/move'
+      .replaceAll('{id}', id);
+
+    // ignore: prefer_final_locals
+    Object? postBody = albumMoveAssetsDto;
+
+    final queryParams = <QueryParam>[];
+    final headerParams = <String, String>{};
+    final formParams = <String, String>{};
+
+    const contentTypes = <String>['application/json'];
+
+
+    return apiClient.invokeAPI(
+      apiPath,
+      'PUT',
+      queryParams,
+      postBody,
+      headerParams,
+      formParams,
+      contentTypes.isEmpty ? null : contentTypes.first,
+      abortTrigger: abortTrigger,
+    );
+  }
+
+  /// Move assets to another album
+  ///
+  /// Move multiple assets from a specific album by its ID to another album. The assets are added to the target album and removed from the source album in a single transaction. Requires the albumAsset.create permission in addition to albumAsset.delete.
+  ///
+  /// Parameters:
+  ///
+  /// * [String] id (required):
+  ///
+  /// * [AlbumMoveAssetsDto] albumMoveAssetsDto (required):
+  Future<List<BulkIdResponseDto>?> moveAssetsToAlbum(String id, AlbumMoveAssetsDto albumMoveAssetsDto, { Future<void>? abortTrigger, }) async {
+    final response = await moveAssetsToAlbumWithHttpInfo(id, albumMoveAssetsDto, abortTrigger: abortTrigger,);
+    if (response.statusCode >= HttpStatus.badRequest) {
+      throw ApiException(response.statusCode, await _decodeBodyBytes(response));
+    }
+    // When a remote server returns no body with a status of 204, we shall not decode it.
+    // At the time of writing this, `dart:convert` will throw an "Unexpected end of input"
+    // FormatException when trying to decode an empty string.
+    if (response.body.isNotEmpty && response.statusCode != HttpStatus.noContent) {
+      final responseBody = await _decodeBodyBytes(response);
+      return (await apiClient.deserializeAsync(responseBody, 'List<BulkIdResponseDto>') as List)
+        .cast<BulkIdResponseDto>()
+        .toList(growable: false);
+
+    }
+    return null;
+  }
+
   /// Remove assets from an album
   ///
   /// Remove multiple assets from a specific album by its ID.
