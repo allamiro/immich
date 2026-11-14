@@ -26,10 +26,15 @@ The image contains the server and the bundled web app. The machine-learning cont
 
 | Tag | Meaning |
 | --- | --- |
-| `vX.Y.Z-fork.N` | A build of upstream release `vX.Y.Z` plus this fork's changes. |
-| `latest` | The newest `vX.Y.Z-fork.N` build. |
+| `vX.Y.Z-fork.N` | A build of upstream release `vX.Y.Z` plus this fork's changes. The server reports version `X.Y.Z-fork.N`. |
+| `latest` | The newest `vX.Y.Z-fork.N` build. Release candidates such as `vX.Y.Z-rc.1-fork.N` never become `latest`. |
 | `edge`, `main` | The newest build of this fork's default branch, which follows upstream development. Its version label can be ahead of or behind the latest release, and it can carry database migrations that the latest release does not. |
 | `<short commit>` | The exact commit the image was built from. |
+| other names | Test builds of other branches, for example `fork-identity`. Do not use them. |
+
+No image of this fork is ever tagged with an upstream release name such as `v3.4.1`.
+
+Every image names this repository as its source. The About dialog and `/api/server/about` link to this repository, to the workflow run that built the image and to the commit; the build rewrites those lines of `server/Dockerfile` with `.github/fork/rebrand-dockerfile.sh` before building. The image labels say the same: `org.opencontainers.image.title` is "Immich Allamiro (unofficial fork build)", `io.github.allamiro.fork.unofficial` is `true`, `io.github.allamiro.fork.base` names the upstream release (or the upstream `main` commit) the build is based on, and `org.opencontainers.image.revision` is the commit.
 
 A `vX.Y.Z-fork.N` build uses the same database schema as upstream release `vX.Y.Z`, because the fork adds no migration. An `edge` build follows upstream development, whose migrations only move forward. Use a separate test instance or back up your database before trying it.
 
@@ -40,11 +45,33 @@ immich-server:
   image: ghcr.io/allamiro/immich-server-allamiro:latest
 ```
 
+## Releases
+
+Each `vX.Y.Z-fork.N` tag has a GitHub release in this repository: <https://github.com/allamiro/immich/releases>. Its notes are written by the build from facts: the upstream release it is based on, the fork commit and its changes, the image digest and platforms. Upstream's release notes describe upstream's changes only.
+
+## Verifying an image
+
+The build signs a provenance attestation for every published image. To check that an image was built by this repository's workflow:
+
+```bash
+gh attestation verify oci://ghcr.io/allamiro/immich-server-allamiro:<tag> -R allamiro/immich
+```
+
+To read its labels and build metadata:
+
+```bash
+docker buildx imagetools inspect ghcr.io/allamiro/immich-server-allamiro:<tag> --format '{{json .Image}}'
+```
+
+## Building it yourself
+
 To build the image yourself from a checkout, run from the repository root:
 
 ```bash
 docker build -f server/Dockerfile -t immich-server-allamiro .
 ```
+
+Such a build keeps upstream's links in the About dialog. To point them at this repository, run `.github/fork/rebrand-dockerfile.sh server/Dockerfile allamiro/immich <run id> <commit> immich-server-allamiro` first and do not commit the changed `server/Dockerfile`.
 
 ## Mobile apps
 
