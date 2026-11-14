@@ -1,0 +1,442 @@
+name: Fork Sync Upstream
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: merge pushes the merge to the default branch, pr opens a pull request in this repository
+        type: choice
+        options:
+          - merge
+          - pr
+        default: merge
+
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UPSTREAM_REPOSITORY: immich-app/immich
+  UPSTREAM_BRANCH: main
+  CONFLICT_LABEL: upstream-sync-conflict
+  WORKFLOWS_DIRECTORY: .github/workflows
+
+jobs:
+  sync:
+    name: Sync with upstream
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REPOSITORY: ${{ github.repository }}
+      SYNC_MODE: ${{ inputs.mode || vars.UPSTREAM_SYNC_MODE || 'merge' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Read fork settings
+        id: fork
+        run: |
+          if [[ "$SYNC_MODE" != merge && "$SYNC_MODE" != pr ]]; then
+            echo "::error::UPSTREAM_SYNC_MODE must be merge or pr, got '${SYNC_MODE}'."
+            exit 1
+          fi
+
+          {
+            echo "default-branch=$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            echo "has-issues=$(gh api "repos/${REPOSITORY}" --jq .has_issues)"
+            echo "date=$(date -u +%Y%m%d)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Checkout the fork default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.fork.outputs.default-branch }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch upstream branch and tags
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git remote set-url --push upstream "pushing-to-upstream-is-disabled"
+          git fetch --no-tags upstream \
+            "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}" \
+            "+refs/tags/*:refs/upstream-tags/*"
+          git fetch --force --tags origin
+
+      - name: Compare the fork with upstream
+        id: compare
+        run: |
+          fork_sha=$(git rev-parse HEAD)
+          upstream_sha=$(git rev-parse "refs/remotes/upstream/${UPSTREAM_BRANCH}")
+          up_to_date=false
+          if git merge-base --is-ancestor "$upstream_sha" "$fork_sha"; then
+            up_to_date=true
+          fi
+
+          {
+            echo "fork-sha=${fork_sha}"
+            echo "upstream-sha=${upstream_sha}"
+            echo "new-upstream-commits=$(git rev-list --count "${fork_sha}..${upstream_sha}")"
+            echo "up-to-date=${up_to_date}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into a sync branch
+        id: merge
+        if: ${{ steps.compare.outputs.up-to-date == 'false' }}
+        env:
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+          SYNC_DATE: ${{ steps.fork.outputs.date }}
+          FORK_SHA: ${{ steps.compare.outputs.fork-sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+        run: |
+          sync_branch="sync/upstream-${SYNC_DATE}"
+          if [[ "$SYNC_MODE" == pr ]]; then
+            open_sync_branch=$(gh pr list --repo "$REPOSITORY" --state open --base "$DEFAULT_BRANCH" \
+              --json headRefName,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not) | .headRefName | select(startswith("sync/upstream-"))][0] // empty')
+            sync_branch="${open_sync_branch:-$sync_branch}"
+          fi
+          echo "sync-branch=${sync_branch}" | tee -a "$GITHUB_OUTPUT"
+
+          if [[ "$SYNC_MODE" == pr ]] && git ls-remote --exit-code --heads origin "$sync_branch" > /dev/null; then
+            git fetch origin "+refs/heads/${sync_branch}:refs/remotes/origin/${sync_branch}"
+            git switch --create "$sync_branch" "refs/remotes/origin/${sync_branch}"
+          else
+            git switch --create "$sync_branch"
+          fi
+
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "result=already-merged-on-sync-branch" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pre_merge_sha=$(git rev-parse HEAD)
+          merge_base=$(git merge-base "$pre_merge_sha" "$UPSTREAM_SHA")
+
+          git merge --no-commit --no-ff "refs/remotes/upstream/${UPSTREAM_BRANCH}" || true
+          if ! git rev-parse --quiet --verify MERGE_HEAD > /dev/null; then
+            echo "::error::git merge did not start a merge of upstream/${UPSTREAM_BRANCH}."
+            exit 1
+          fi
+
+          git rm -r -f --quiet --cached --ignore-unmatch -- "$WORKFLOWS_DIRECTORY"
+          rm -rf "$WORKFLOWS_DIRECTORY"
+          git checkout "$pre_merge_sha" -- "$WORKFLOWS_DIRECTORY"
+
+          conflicted_files=$(git diff --name-only --diff-filter=U)
+          if [[ -n "$conflicted_files" ]]; then
+            issue_body="${RUNNER_TEMP}/conflict-issue.md"
+            {
+              echo "The automatic upstream sync stopped because the merge has conflicts. Nothing was pushed."
+              echo
+              echo "## Range"
+              echo
+              echo "- Commit range: \`${FORK_SHA}..${UPSTREAM_SHA}\`"
+              echo "- Fork \`${DEFAULT_BRANCH}\`: \`${FORK_SHA}\`"
+              echo "- Upstream \`${UPSTREAM_BRANCH}\`: \`${UPSTREAM_SHA}\`"
+              echo "- Merge base: \`${merge_base}\`"
+              echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS}"
+              echo "- Workflow run: ${RUN_URL}"
+              echo
+              echo "## Conflicted files"
+              echo
+              while IFS= read -r file; do
+                echo "- \`${file}\`"
+              done <<< "$conflicted_files"
+              echo
+              echo "## Which side changed each file"
+              echo
+              echo "At most 5 commits per side, newest first."
+              while IFS= read -r file; do
+                echo
+                echo "### \`${file}\`"
+                echo
+                echo "Fork commits:"
+                echo
+                echo '```text'
+                git log --oneline -5 "${merge_base}..${pre_merge_sha}" -- "$file"
+                echo '```'
+                echo
+                echo "Upstream commits:"
+                echo
+                echo '```text'
+                git log --oneline -5 "${merge_base}..${UPSTREAM_SHA}" -- "$file"
+                echo '```'
+              done <<< "$conflicted_files"
+              echo
+              echo "## Resolve locally"
+              echo
+              echo "1. Add the upstream remote and fetch both sides."
+              echo
+              echo '```sh'
+              echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
+              echo "git fetch upstream ${UPSTREAM_BRANCH}"
+              echo "git fetch origin"
+              echo '```'
+              echo
+              echo "2. Create the resolution branch from the fork default branch and run the merge."
+              echo
+              echo '```sh'
+              echo "git switch -c sync/resolve-${SYNC_DATE} origin/${DEFAULT_BRANCH}"
+              echo "git merge --no-commit --no-ff upstream/${UPSTREAM_BRANCH}"
+              echo '```'
+              echo
+              echo "3. Resolve every conflicted file listed above and stage it with \`git add\`."
+              echo
+              echo "4. Restore \`${WORKFLOWS_DIRECTORY}\` from the fork side so the merge carries no upstream workflow changes, then commit."
+              echo
+              echo '```sh'
+              echo "git rm -r -f --quiet --cached --ignore-unmatch -- ${WORKFLOWS_DIRECTORY}"
+              echo "rm -rf ${WORKFLOWS_DIRECTORY}"
+              echo "git checkout HEAD -- ${WORKFLOWS_DIRECTORY}"
+              echo "git commit -m \"chore: merge upstream ${UPSTREAM_BRANCH}\""
+              echo "git diff --stat HEAD~1 -- ${WORKFLOWS_DIRECTORY}"
+              echo '```'
+              echo
+              echo "The last command must print nothing."
+              echo
+              echo "5. Test the web and server packages and regenerate the API clients."
+              echo
+              echo '```sh'
+              echo "mise //web:ci-unit"
+              echo "mise //web:build"
+              echo "mise //server:ci-unit"
+              echo "mise //:open-api"
+              echo "git status --short"
+              echo '```'
+              echo
+              echo "6. Push the branch to this repository and open the pull request here."
+              echo
+              echo '```sh'
+              echo "git push origin sync/resolve-${SYNC_DATE}"
+              echo "gh pr create --repo ${REPOSITORY} --base ${DEFAULT_BRANCH} --head sync/resolve-${SYNC_DATE} --title \"chore: sync upstream ${UPSTREAM_BRANCH}\" --body \"Resolves the upstream sync conflict.\""
+              echo '```'
+              echo
+              echo "Merge that pull request with a merge commit, not squash or rebase, so upstream history stays an ancestor of \`${DEFAULT_BRANCH}\`."
+              echo
+              echo "## Checklist after resolving"
+              echo
+              echo "- [ ] Web build passes (\`mise //web:build\`)"
+              echo "- [ ] Web unit tests pass (\`mise //web:ci-unit\`)"
+              echo "- [ ] Server tests pass (\`mise //server:ci-unit\`)"
+              echo "- [ ] Move to album still works: select assets in an album, move them, they leave the source album and appear in the target album"
+              echo "- [ ] Regenerated API clients are up to date (\`mise //:open-api\` leaves \`git status --short\` empty)"
+              echo "- [ ] \`${WORKFLOWS_DIRECTORY}\` is identical to the fork default branch"
+              echo
+              echo "This issue is closed automatically by the next sync run that merges cleanly."
+            } > "$issue_body"
+
+            git merge --abort
+            {
+              echo "result=conflict"
+              echo "conflicted-file-count=$(grep -c . <<< "$conflicted_files")"
+              echo "issue-body=${issue_body}"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit --quiet -m "chore: merge upstream ${UPSTREAM_BRANCH} at ${UPSTREAM_SHA::10}"
+
+          workflow_drift=$(git diff --stat HEAD~1 -- "$WORKFLOWS_DIRECTORY"; git status --porcelain -- "$WORKFLOWS_DIRECTORY")
+          if [[ -n "$workflow_drift" ]]; then
+            echo "::error::The merge commit changes ${WORKFLOWS_DIRECTORY}, refusing to push."
+            echo "$workflow_drift"
+            exit 1
+          fi
+
+          {
+            echo "result=merged"
+            echo "merge-sha=$(git rev-parse HEAD)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Report the merge conflict in an issue
+        if: ${{ steps.merge.outputs.result == 'conflict' }}
+        env:
+          HAS_ISSUES: ${{ steps.fork.outputs.has-issues }}
+          ISSUE_BODY: ${{ steps.merge.outputs.issue-body }}
+          COMMIT_RANGE: ${{ steps.compare.outputs.fork-sha }}..${{ steps.compare.outputs.upstream-sha }}
+          CONFLICTED_FILE_COUNT: ${{ steps.merge.outputs.conflicted-file-count }}
+        run: |
+          if [[ "$HAS_ISSUES" != true ]]; then
+            echo "::error::The merge conflicts and issues are disabled in ${REPOSITORY}. Enable them under Settings, General, Features."
+            cat "$ISSUE_BODY" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          gh label create "$CONFLICT_LABEL" --repo "$REPOSITORY" --force \
+            --color D93F0B --description "The automatic upstream sync stopped on merge conflicts"
+
+          issue_number=$(gh issue list --repo "$REPOSITORY" --state open --label "$CONFLICT_LABEL" \
+            --json number --jq '.[0].number // empty')
+
+          if [[ -z "$issue_number" ]]; then
+            gh issue create --repo "$REPOSITORY" --label "$CONFLICT_LABEL" \
+              --title "Upstream sync conflict" --body-file "$ISSUE_BODY"
+            echo "::warning::Upstream sync stopped on ${CONFLICTED_FILE_COUNT} conflicted file(s)."
+            exit 0
+          fi
+
+          current_issue_body=$(gh issue view "$issue_number" --repo "$REPOSITORY" --json body --jq .body)
+          if [[ "$current_issue_body" == *"$COMMIT_RANGE"* ]]; then
+            echo "Issue ${issue_number} already describes ${COMMIT_RANGE}."
+          else
+            gh issue edit "$issue_number" --repo "$REPOSITORY" --body-file "$ISSUE_BODY"
+            gh issue comment "$issue_number" --repo "$REPOSITORY" \
+              --body "The conflict changed. The description now covers \`${COMMIT_RANGE}\` with ${CONFLICTED_FILE_COUNT} conflicted file(s). Run: ${RUN_URL}"
+          fi
+
+          echo "::warning::Upstream sync stopped on ${CONFLICTED_FILE_COUNT} conflicted file(s)."
+
+      - name: Publish the merge
+        id: publish
+        if: ${{ steps.merge.outputs.result == 'merged' }}
+        env:
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync-branch }}
+          COMMIT_RANGE: ${{ steps.compare.outputs.fork-sha }}..${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+        run: |
+          push_to_fork() {
+            local refspec="$1"
+            local push_log="${RUNNER_TEMP}/push.log"
+            if git push origin "$refspec" 2>&1 | tee "$push_log"; then
+              return 0
+            fi
+            if grep --quiet --ignore-case 'workflow' "$push_log"; then
+              echo "::error::GitHub rejected the push because a commit in the pushed range changes ${WORKFLOWS_DIRECTORY}, which GITHUB_TOKEN is not allowed to push."
+            else
+              echo "::error::Pushing ${refspec} to ${REPOSITORY} failed."
+            fi
+            return 1
+          }
+
+          if [[ "$SYNC_MODE" == merge ]]; then
+            push_to_fork "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            echo "pushed-to-default-branch=true" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          push_to_fork "HEAD:refs/heads/${SYNC_BRANCH}"
+          pull_request=$(gh pr list --repo "$REPOSITORY" --state open --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" \
+            --json number --jq '.[0].number // empty')
+          if [[ -n "$pull_request" ]]; then
+            echo "Pull request ${pull_request} already tracks ${SYNC_BRANCH}."
+            exit 0
+          fi
+
+          pull_request_body="${RUNNER_TEMP}/pull-request.md"
+          {
+            echo "Merges upstream \`${UPSTREAM_BRANCH}\` into \`${DEFAULT_BRANCH}\`."
+            echo
+            echo "- Commit range: \`${COMMIT_RANGE}\`"
+            echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS}"
+            echo "- \`${WORKFLOWS_DIRECTORY}\` is kept identical to the fork side."
+            echo
+            echo "Merge with a merge commit so the upstream history stays an ancestor of \`${DEFAULT_BRANCH}\`."
+          } > "$pull_request_body"
+
+          gh pr create --repo "$REPOSITORY" --base "$DEFAULT_BRANCH" --head "$SYNC_BRANCH" \
+            --title "chore: sync upstream ${UPSTREAM_BRANCH}" --body-file "$pull_request_body"
+
+      - name: Close the resolved conflict issue
+        if: ${{ steps.fork.outputs.has-issues == 'true' && (steps.compare.outputs.up-to-date == 'true' || steps.merge.outputs.result == 'merged' || steps.merge.outputs.result == 'already-merged-on-sync-branch') }}
+        env:
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+        run: |
+          gh issue list --repo "$REPOSITORY" --state open --label "$CONFLICT_LABEL" --json number --jq '.[].number' |
+            while IFS= read -r issue_number; do
+              gh issue close "$issue_number" --repo "$REPOSITORY" \
+                --comment "Upstream \`${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\` merges cleanly now. Run: ${RUN_URL}"
+            done
+
+      - name: Tag a new upstream release
+        id: release
+        env:
+          DEFAULT_BRANCH_SHA: ${{ steps.publish.outputs.pushed-to-default-branch == 'true' && steps.merge.outputs.merge-sha || steps.compare.outputs.fork-sha }}
+        run: |
+          upstream_release=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name || true)
+          if [[ ! "$upstream_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::Skipping release detection, the latest upstream release tag reads '${upstream_release}'."
+            exit 0
+          fi
+
+          if ! release_sha=$(git rev-parse --quiet --verify "refs/upstream-tags/${upstream_release}^{commit}"); then
+            echo "::warning::Upstream release ${upstream_release} has no fetched tag."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$release_sha" "$DEFAULT_BRANCH_SHA"; then
+            echo "Upstream release ${upstream_release} is not contained in the fork default branch yet."
+            exit 0
+          fi
+
+          latest_fork_tag=$(git tag --list 'v*-fork.*' --sort=-v:refname | sed -n 1p)
+          latest_fork_base="${latest_fork_tag%-fork.*}"
+          if [[ -n "$latest_fork_base" ]]; then
+            newest=$(printf '%s\n' "$latest_fork_base" "$upstream_release" | sort --version-sort | tail -n 1)
+            if [[ "$latest_fork_base" == "$upstream_release" || "$newest" != "$upstream_release" ]]; then
+              echo "Fork tag ${latest_fork_tag} already covers upstream release ${upstream_release}."
+              exit 0
+            fi
+          fi
+
+          last_build_number=$(git tag --list "${upstream_release}-fork.*" | sed -E 's/^.*-fork\.([0-9]+)$/\1/' | sort --numeric-sort | tail -n 1)
+          fork_tag="${upstream_release}-fork.$((${last_build_number:-0} + 1))"
+
+          git tag --annotate "$fork_tag" "$DEFAULT_BRANCH_SHA" --message "Upstream ${upstream_release} with fork changes"
+          git push origin "refs/tags/${fork_tag}"
+          echo "fork-tag=${fork_tag}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Start the builds
+        if: ${{ !cancelled() && (steps.release.outputs.fork-tag != '' || steps.publish.outputs.pushed-to-default-branch == 'true') }}
+        env:
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+          FORK_TAG: ${{ steps.release.outputs.fork-tag }}
+          PUSHED_TO_DEFAULT_BRANCH: ${{ steps.publish.outputs.pushed-to-default-branch }}
+        run: |
+          if [[ -n "$FORK_TAG" ]]; then
+            gh workflow run fork-build-image.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" --field "ref=${FORK_TAG}"
+            gh workflow run fork-build-android.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" --field "ref=${FORK_TAG}"
+          else
+            gh workflow run fork-build-image.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH"
+          fi
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          UP_TO_DATE: ${{ steps.compare.outputs.up-to-date }}
+          FORK_SHA: ${{ steps.compare.outputs.fork-sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream-sha }}
+          NEW_UPSTREAM_COMMITS: ${{ steps.compare.outputs.new-upstream-commits }}
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          PUSHED_TO_DEFAULT_BRANCH: ${{ steps.publish.outputs.pushed-to-default-branch }}
+          FORK_TAG: ${{ steps.release.outputs.fork-tag }}
+        run: |
+          {
+            echo "### Upstream sync"
+            echo
+            echo "- Mode: \`${SYNC_MODE}\`"
+            echo "- Fork: \`${FORK_SHA}\`"
+            echo "- Upstream: \`${UPSTREAM_SHA}\`"
+            echo "- New upstream commits: ${NEW_UPSTREAM_COMMITS:-unknown}"
+            echo "- Already up to date: ${UP_TO_DATE:-unknown}"
+            echo "- Merge result: ${MERGE_RESULT:-not attempted}"
+            echo "- Pushed to the default branch: ${PUSHED_TO_DEFAULT_BRANCH:-false}"
+            echo "- New fork tag: ${FORK_TAG:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
