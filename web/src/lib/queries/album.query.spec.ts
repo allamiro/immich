@@ -1,14 +1,16 @@
 import { eventManager } from '#lib/managers/event-manager.svelte.ts';
-import { moveAssetsToAlbumMutation } from '#lib/queries/album.query.ts';
-import { executeMutation } from '#lib/queries/client.ts';
-import { getFormatter } from '#lib/utils/i18n.ts';
+import { getAlbumInfoQuery, moveAssetsToAlbumMutation } from '#lib/queries/album.query.ts';
+import { executeMutation, queryClient } from '#lib/queries/client.ts';
+import { factory } from '#test/unit/factories.ts';
 import { test } from '#test/unit/fixtures.ts';
 import { BulkIdErrorReason, type BulkIdResponseDto } from '@immich/sdk';
 import { toastManager } from '@immich/ui';
-import { afterEach, beforeEach, describe, expect, vi, type MockInstance } from 'vitest';
+import { init, register, waitLocale } from 'svelte-i18n';
+import { afterEach, beforeAll, beforeEach, describe, expect, vi, type MockInstance } from 'vitest';
 
 const sourceAlbumId = 'source';
 const targetAlbumId = 'target';
+const otherAlbumId = 'other';
 
 const succeeded = (id: string): BulkIdResponseDto => ({ id, success: true });
 const failed = (id: string, error: BulkIdErrorReason): BulkIdResponseDto => ({ id, success: false, error });
@@ -22,6 +24,12 @@ describe('moveAssetsToAlbumMutation', () => {
   let danger: MockInstance<typeof toastManager.danger>;
   let emit: MockInstance<typeof eventManager.emit>;
 
+  beforeAll(async () => {
+    await init({ fallbackLocale: 'en-US' });
+    register('en-US', () => import('#i18n/en.json'));
+    await waitLocale('en-US');
+  });
+
   beforeEach(() => {
     primary = vi.spyOn(toastManager, 'primary');
     warning = vi.spyOn(toastManager, 'warning');
@@ -34,7 +42,6 @@ describe('moveAssetsToAlbumMutation', () => {
   });
 
   test('moves every asset with a single request', async ({ api, settle }) => {
-    const $t = await getFormatter();
     api.on({ moveAssetsToAlbum: () => ({ json: [succeeded('asset-1'), succeeded('asset-2')] }) });
 
     await move(['asset-1', 'asset-2']);
@@ -49,8 +56,8 @@ describe('moveAssetsToAlbumMutation', () => {
     expect(api.removeAssetFromAlbum.calls).toHaveLength(0);
     expect(primary).toHaveBeenCalledExactlyOnceWith(
       {
-        description: $t('assets_moved_to_album_count', { values: { count: 2 } }),
-        button: { label: $t('view_album'), onclick: expect.any(Function) },
+        description: 'Moved 2 assets to the album',
+        button: { label: 'View Album', onclick: expect.any(Function) },
       },
       { timeout: 5000 },
     );
@@ -75,7 +82,6 @@ describe('moveAssetsToAlbumMutation', () => {
   });
 
   test('reports only the moved assets when some could not be moved', async ({ api, settle }) => {
-    const $t = await getFormatter();
     api.on({
       moveAssetsToAlbum: () => ({
         json: [
@@ -91,12 +97,10 @@ describe('moveAssetsToAlbumMutation', () => {
 
     expect(api.moveAssetsToAlbum).toHaveBeenCalled();
     expect(primary).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ description: $t('assets_moved_to_album_count', { values: { count: 1 } }) }),
+      expect.objectContaining({ description: 'Moved 1 asset to the album' }),
       { timeout: 5000 },
     );
-    expect(warning).toHaveBeenCalledExactlyOnceWith(
-      $t('assets_cannot_be_moved_to_album_count', { values: { count: 2 } }),
-    );
+    expect(warning).toHaveBeenCalledExactlyOnceWith('Could not move 2 assets to the album');
     expect(emit).toHaveBeenCalledExactlyOnceWith('AlbumRemoveAssets', {
       assetIds: ['asset-1'],
       albumIds: [sourceAlbumId],
@@ -104,7 +108,6 @@ describe('moveAssetsToAlbumMutation', () => {
   });
 
   test('does not report a move when nothing could be moved', async ({ api, settle }) => {
-    const $t = await getFormatter();
     api.on({
       moveAssetsToAlbum: () => ({
         json: [failed('asset-1', BulkIdErrorReason.NoPermission), failed('asset-2', BulkIdErrorReason.NotFound)],
@@ -116,9 +119,7 @@ describe('moveAssetsToAlbumMutation', () => {
 
     expect(api.moveAssetsToAlbum).toHaveBeenCalled();
     expect(primary).not.toHaveBeenCalled();
-    expect(warning).toHaveBeenCalledExactlyOnceWith(
-      $t('assets_cannot_be_moved_to_album_count', { values: { count: 2 } }),
-    );
+    expect(warning).toHaveBeenCalledExactlyOnceWith('Could not move 2 assets to the album');
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -137,5 +138,35 @@ describe('moveAssetsToAlbumMutation', () => {
     expect(primary).not.toHaveBeenCalled();
     expect(warning).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  test('shows the move error when the server does not answer with JSON', async ({ api, logger, settle }) => {
+    api.on({ moveAssetsToAlbum: () => ({ body: '<!doctype html><html></html>', contentType: 'text/html' }) });
+
+    const results = await move(['asset-1']);
+    await settle();
+
+    expect(results).toBeUndefined();
+    expect(api.moveAssetsToAlbum).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(/handleError/);
+    expect(danger).toHaveBeenCalledExactlyOnceWith('Error moving assets to album');
+    expect(primary).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  test('marks the cached source and target albums as stale after a move', async ({ api, settle }) => {
+    for (const id of [sourceAlbumId, targetAlbumId, otherAlbumId]) {
+      queryClient.setQueryData(getAlbumInfoQuery(id).queryKey, factory.album({ id }));
+    }
+    api.on({ moveAssetsToAlbum: () => ({ json: [succeeded('asset-1')] }) });
+
+    await move(['asset-1']);
+    await settle();
+
+    expect(api.moveAssetsToAlbum).toHaveBeenCalled();
+    const isStale = (id: string) => queryClient.getQueryState(getAlbumInfoQuery(id).queryKey)?.isInvalidated;
+    expect(isStale(sourceAlbumId)).toBe(true);
+    expect(isStale(targetAlbumId)).toBe(true);
+    expect(isStale(otherAlbumId)).toBe(false);
   });
 });

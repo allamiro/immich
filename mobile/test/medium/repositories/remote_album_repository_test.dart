@@ -1,3 +1,4 @@
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/infrastructure/repositories/remote_album.repository.dart';
@@ -87,13 +88,15 @@ void main() {
     test('sets the first moved asset as thumbnail when the target album has no thumbnail', () async {
       final source = await ctx.newRemoteAlbum(ownerId: userId);
       final target = await ctx.newRemoteAlbum(ownerId: userId);
-      final asset = await ctx.newRemoteAsset(ownerId: userId);
-      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+      final first = await ctx.newRemoteAsset(ownerId: userId);
+      final second = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: first.id);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: second.id);
 
-      await sut.moveAssets(source.id, target.id, [asset.id]);
+      await sut.moveAssets(source.id, target.id, [first.id, second.id]);
 
       final updated = await sut.get(target.id);
-      expect(updated?.thumbnailAssetId, asset.id);
+      expect(updated?.thumbnailAssetId, first.id);
     });
 
     test('preserves an existing thumbnail of the target album', () async {
@@ -119,6 +122,23 @@ void main() {
 
       expect(await assetIdsOf(source.id), [asset.id]);
       expect(await assetIdsOf(target.id), isEmpty);
+    });
+
+    test('rolls back the whole move when the thumbnail update fails', () async {
+      final source = await ctx.newRemoteAlbum(ownerId: userId);
+      final target = await ctx.newRemoteAlbum(ownerId: userId);
+      final asset = await ctx.newRemoteAsset(ownerId: userId);
+      await ctx.newRemoteAlbumAsset(albumId: source.id, assetId: asset.id);
+      await ctx.db.customStatement(
+        'CREATE TRIGGER reject_thumbnail_update BEFORE UPDATE OF thumbnail_asset_id ON remote_album_entity '
+        "BEGIN SELECT RAISE(ABORT, 'thumbnail update rejected'); END",
+      );
+
+      await expectLater(sut.moveAssets(source.id, target.id, [asset.id]), throwsA(isA<SqliteException>()));
+
+      expect(await assetIdsOf(source.id), [asset.id]);
+      expect(await assetIdsOf(target.id), isEmpty);
+      expect((await sut.get(target.id))?.thumbnailAssetId, isNull);
     });
   });
 
