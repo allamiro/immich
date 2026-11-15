@@ -13,6 +13,8 @@
 #   UPSTREAM_MAIN_BASE  merge base of SOURCE_COMMIT with upstream main, empty when unknown
 #   FORK_DOC_IN_SOURCE  true when FORK.md exists at SOURCE_COMMIT
 #   WORKFLOW_COMMIT     commit of the workflow file, used for FORK.md when the source lacks it
+#   CREATED             value of org.opencontainers.image.created; the workflow passes the source
+#                       commit's date so every job of a run computes the same labels (default: now)
 #   SERVER_URL          default https://github.com
 #
 # Policy:
@@ -45,6 +47,7 @@ UPSTREAM_MAIN_BASE=${UPSTREAM_MAIN_BASE:-}
 FORK_DOC_IN_SOURCE=${FORK_DOC_IN_SOURCE:-false}
 WORKFLOW_COMMIT=${WORKFLOW_COMMIT:-$SOURCE_COMMIT}
 SERVER_URL=${SERVER_URL:-https://github.com}
+CREATED=${CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
 [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "Source commit '${SOURCE_COMMIT}' is not a full SHA."
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || fail "Repository '${REPOSITORY}' is not owner/name."
@@ -119,7 +122,7 @@ fi
 
 unique_tags=$(printf '%s\n' "${tags[@]}" | awk 'NF && !seen[$0]++' | paste -sd ' ' -)
 
-created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+created="$CREATED"
 title='Immich Allamiro (unofficial fork build)'
 description="Unofficial fork build of upstream Immich ${description_base} with the changes of ${REPOSITORY}. Not affiliated with or endorsed by the Immich project or FUTO."
 source_url="${SERVER_URL}/${REPOSITORY}"
