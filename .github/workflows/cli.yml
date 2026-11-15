@@ -21,6 +21,8 @@ permissions: {}
 jobs:
   publish:
     name: CLI Publish
+    # Pull request and push builds stay usable on forks; only upstream publishes releases.
+    if: ${{ github.event_name != 'release' || github.repository == 'immich-app/immich' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

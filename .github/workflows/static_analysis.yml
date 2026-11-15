@@ -82,7 +82,12 @@ jobs:
         run: mise //mobile:codegen
 
       - name: Run analyze
+        if: ${{ github.repository == 'immich-app/immich' }}
         run: mise //mobile:analyze --full
+
+      - name: Run Dart analyze (fork, no DCM)
+        if: ${{ github.repository != 'immich-app/immich' }}
+        run: mise //mobile:analyze:dart
 
       - name: Run format
         run: mise //mobile:format

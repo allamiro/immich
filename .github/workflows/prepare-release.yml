@@ -27,6 +27,7 @@ permissions: {}
 
 jobs:
   merge_translations:
+    if: ${{ github.repository == 'immich-app/immich' }}
     uses: ./.github/workflows/merge-translations.yml
     with:
       skip: ${{ inputs.skipTranslations || github.ref_name != 'main' }}
