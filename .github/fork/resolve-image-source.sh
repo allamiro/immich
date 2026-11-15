@@ -17,18 +17,21 @@
 #                       commit's date so every job of a run computes the same labels (default: now)
 #   SERVER_URL          default https://github.com
 #
-# Policy:
-#   - A tag, or any ref that looks like a version (v1.2 or 1.2...), must be a tag named
-#     vX.Y.Z[-pre]-fork.N, so an upstream release name such as v3.4.1 or 3.4.1 is never published.
+# Policy (patterns in tag-policy.sh):
+#   - A tag, or any ref whose name or image tag looks like a release (v3, V3.4.1, 3.4.1, -v3.4.1),
+#     must be a tag named vX.Y.Z[-pre]-fork.N, so an upstream release name is never published.
 #   - For such a tag server/package.json must read X.Y.Z[-pre]-fork.N.
-#   - Fork release tags publish <tag>, <short commit>, and latest when the tag has no prerelease
-#     part and no higher stable fork tag exists. The default branch publishes main, edge and
-#     <short commit>. Any other branch publishes its sanitized name and <short commit>.
+#   - A branch other than the default branch may not publish a channel name (latest, edge, main,
+#     master, release, stable, nightly, in any case).
+#   - tags are pushed first and checked; promote-tags are moved only after the checks pass:
+#     fork release: tags <tag> <short commit>, promote latest when the tag has no prerelease part
+#     and no higher stable fork tag exists; default branch: tags <short commit>, promote main
+#     edge; other branches: tags <sanitized name> <short commit>, no promotion.
 
 set -euo pipefail
 
-FORK_TAG_PATTERN='^v([0-9]+\.[0-9]+\.[0-9]+)(-([A-Za-z0-9.]+))?-fork\.([0-9]+)$'
-VERSION_LIKE_PATTERN='^v?[0-9]+\.[0-9]+'
+# shellcheck source=SCRIPTDIR/tag-policy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tag-policy.sh"
 
 fail() {
   echo "::error::$*" >&2
@@ -51,6 +54,7 @@ CREATED=${CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 
 [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "Source commit '${SOURCE_COMMIT}' is not a full SHA."
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || fail "Repository '${REPOSITORY}' is not owner/name."
+[[ "$SOURCE_REF" =~ ^[A-Za-z0-9._/@+-]+$ ]] || fail "Source ref '${SOURCE_REF}' contains characters this workflow does not publish."
 
 owner=$(tr '[:upper:]' '[:lower:]' <<< "${REPOSITORY%%/*}")
 package=immich-server-allamiro
@@ -64,7 +68,7 @@ prerelease=false
 latest=false
 previous_tag=''
 
-if [[ "$IS_TAG" == true || "$SOURCE_REF" =~ $VERSION_LIKE_PATTERN ]]; then
+if [[ "$IS_TAG" == true ]] || looks_like_release "$SOURCE_REF" || looks_like_release "$ref_tag"; then
   [[ "$SOURCE_REF" =~ $FORK_TAG_PATTERN ]] ||
     fail "Refusing to publish '${SOURCE_REF}': a release tag of this fork must be named vX.Y.Z-fork.N (or vX.Y.Z-pre-fork.N), for example v3.4.1-fork.1, so it never carries an upstream release name."
   [[ "$IS_TAG" == true ]] || fail "Refusing to publish '${SOURCE_REF}': a fork release name must be a tag in ${REPOSITORY}, not a branch or commit."
@@ -85,6 +89,7 @@ if [[ "$IS_TAG" == true || "$SOURCE_REF" =~ $VERSION_LIKE_PATTERN ]]; then
   version="$SOURCE_REF"
   build_image="$SOURCE_REF"
   tags=("$SOURCE_REF" "$short_commit")
+  promote_tags=()
 
   fork_tags=$(grep -E "$FORK_TAG_PATTERN" <<< "$FORK_TAGS" | grep -vxF "$SOURCE_REF" || true)
   if [[ "$prerelease" == false ]]; then
@@ -92,7 +97,7 @@ if [[ "$IS_TAG" == true || "$SOURCE_REF" =~ $VERSION_LIKE_PATTERN ]]; then
     newest=$(printf '%s\n' "$stable_tags" "$SOURCE_REF" | awk 'NF' | sort -V | tail -n 1)
     if [[ "$newest" == "$SOURCE_REF" ]]; then
       latest=true
-      tags+=(latest)
+      promote_tags+=(latest)
     fi
     candidates="$stable_tags"
   else
@@ -101,8 +106,8 @@ if [[ "$IS_TAG" == true || "$SOURCE_REF" =~ $VERSION_LIKE_PATTERN ]]; then
   previous_tag=$(printf '%s\n' "$candidates" "$SOURCE_REF" | awk 'NF' | sort -V | grep -B 1 -xF "$SOURCE_REF" | grep -vxF "$SOURCE_REF" || true)
   description_base="release ${base}"
 else
-  if [[ "$ref_tag" == latest || "$ref_tag" == edge ]] && [[ "$SOURCE_REF" != "$DEFAULT_BRANCH" ]]; then
-    fail "Refusing to publish branch '${SOURCE_REF}': its image tag would replace '${ref_tag}'."
+  if is_reserved_tag "$ref_tag" && [[ "$SOURCE_REF" != "$DEFAULT_BRANCH" ]]; then
+    fail "Refusing to publish branch '${SOURCE_REF}': its image tag '${ref_tag}' is a channel name."
   fi
   if [[ -n "$UPSTREAM_MAIN_BASE" ]]; then
     [[ "$UPSTREAM_MAIN_BASE" =~ ^[0-9a-f]{40}$ ]] || fail "Upstream merge base '${UPSTREAM_MAIN_BASE}' is not a full SHA."
@@ -114,13 +119,17 @@ else
   fi
   version="$ref_tag"
   build_image="$ref_tag"
-  tags=("$ref_tag" "$short_commit")
   if [[ "$SOURCE_REF" == "$DEFAULT_BRANCH" ]]; then
-    tags+=(edge)
+    tags=("$short_commit")
+    promote_tags=(main edge)
+  else
+    tags=("$ref_tag" "$short_commit")
+    promote_tags=()
   fi
 fi
 
 unique_tags=$(printf '%s\n' "${tags[@]}" | awk 'NF && !seen[$0]++' | paste -sd ' ' -)
+unique_promote_tags=$(printf '%s\n' "${promote_tags[@]+"${promote_tags[@]}"}" | awk 'NF && !seen[$0]++' | paste -sd ' ' -)
 
 created="$CREATED"
 title='Immich Allamiro (unofficial fork build)'
@@ -134,6 +143,7 @@ if [[ "$FORK_DOC_IN_SOURCE" != true ]]; then
 fi
 
 docs_url="${SERVER_URL}/${REPOSITORY}/blob/${docs_commit}/FORK.md"
+delimiter=$(random_delimiter)
 
 cat << EOF
 image=${image}
@@ -145,6 +155,7 @@ source-ref=${SOURCE_REF}
 source-commit=${SOURCE_COMMIT}
 build-image=${build_image}
 tags=${unique_tags}
+promote-tags=${unique_promote_tags}
 release=${release}
 prerelease=${prerelease}
 latest=${latest}
@@ -156,7 +167,7 @@ description=${description}
 source-url=${source_url}
 docs-url=${docs_url}
 created=${created}
-labels<<FORK_LABELS
+labels<<${delimiter}
 org.opencontainers.image.title=${title}
 org.opencontainers.image.description=${description}
 org.opencontainers.image.source=${source_url}
@@ -168,5 +179,5 @@ org.opencontainers.image.licenses=AGPL-3.0
 org.opencontainers.image.created=${created}
 io.github.allamiro.fork.base=${base}
 io.github.allamiro.fork.unofficial=true
-FORK_LABELS
+${delimiter}
 EOF

@@ -83,13 +83,13 @@ git -C "$repo" tag upstream-v3.5.0
 run() {
   local ref=$1 checkout=$2
   git -C "$repo" checkout -q --detach "$checkout"
-  env PATH="${work}/bin:${PATH}" SOURCE_DIR="$repo" REQUESTED_REF="$ref" TRIGGER_REF_NAME=main \
+  env PATH="${work}/bin:${PATH}" RETRY_DELAY=0 SOURCE_DIR="$repo" REQUESTED_REF="$ref" TRIGGER_REF_NAME=main \
     DEFAULT_BRANCH=main REPOSITORY=allamiro/immich WORKFLOW_COMMIT=fedcba9876543210fedcba9876543210fedcba98 \
     "$resolve"
 }
 
 show() {
-  grep -E '^(tags|release|prerelease|latest|version|base|previous-tag|upstream-base-commit|org.opencontainers.image.created|org.opencontainers.image.documentation)=' <<< "$1" |
+  grep -E '^(tags|promote-tags|release|prerelease|latest|version|base|previous-tag|upstream-base-commit|org.opencontainers.image.created|org.opencontainers.image.documentation)=' <<< "$1" |
     while IFS= read -r line; do echo "     ${line}"; done
 }
 
@@ -120,6 +120,13 @@ expect 'tag given as refs/tags/v3.4.1' refs/tags/v3.4.1 v3.4.1 fail
 expect 'fork tag but checkout elsewhere' v3.4.1-fork.1 v3.4.1 fail
 expect 'fork tag whose upstream base does not exist' v3.6.0-fork.1 v3.6.0-fork.1 fail
 expect 'fork tag that does not contain its upstream base' v3.5.0-fork.1 v3.5.0-fork.1 fail
+expect 'branch -v3.4.1 (image tag v3.4.1)' -v3.4.1 v3.4.1-fork.1 fail
+expect 'branch --3.4.1 (image tag 3.4.1)' --3.4.1 v3.4.1-fork.1 fail
+expect 'branch V3.4.1' V3.4.1 v3.4.1-fork.1 fail
+expect 'branch v3' v3 v3.4.1-fork.1 fail
+expect 'branch release' release v3.4.1-fork.1 fail
+expect 'branch Latest' Latest v3.4.1-fork.1 fail
+expect 'branch fork/identity' fork/identity v3.4.1-fork.1 ok
 
 if [[ "$failures" -gt 0 ]]; then
   echo "${failures} case(s) failed"

@@ -16,6 +16,7 @@
 #   UPSTREAM_BRANCH      default main
 #   SERVER_URL           default https://github.com
 #   GH_TOKEN             token for the GitHub API (gh)
+#   RETRY_DELAY          first retry delay in seconds for GitHub API calls, default 2
 
 set -euo pipefail
 
@@ -26,7 +27,10 @@ TRIGGER_REF_TYPE=${TRIGGER_REF_TYPE:-branch}
 SOURCE_DIR=${SOURCE_DIR:-source}
 UPSTREAM_REPOSITORY=${UPSTREAM_REPOSITORY:-immich-app/immich}
 UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-main}
-policy="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resolve-image-source.sh"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+policy="${here}/resolve-image-source.sh"
+# shellcheck source=SCRIPTDIR/tag-policy.sh
+source "${here}/tag-policy.sh"
 
 fail() {
   echo "::error::$*" >&2
@@ -43,18 +47,18 @@ source_ref="${source_ref#refs/heads/}"
 source_ref="${source_ref#refs/tags/}"
 source_commit=$(git -C "$SOURCE_DIR" rev-parse HEAD)
 
-all_tags=$(gh api "repos/${REPOSITORY}/git/matching-refs/tags/" --paginate --jq '.[].ref | sub("^refs/tags/"; "")')
+all_tags=$(retry gh api "repos/${REPOSITORY}/git/matching-refs/tags/" --paginate --jq '.[].ref | sub("^refs/tags/"; "")')
 is_tag=false
 if [[ "$requested_as_tag" == true ]] || grep -qxF "$source_ref" <<< "$all_tags"; then
   is_tag=true
-  tag_commit=$(gh api "repos/${REPOSITORY}/commits/refs/tags/${source_ref}" --jq .sha)
+  tag_commit=$(retry gh api "repos/${REPOSITORY}/commits/refs/tags/${source_ref}" --jq .sha)
   [[ "$tag_commit" == "$source_commit" ]] ||
     fail "Tag ${source_ref} points at ${tag_commit}, but the checkout is ${source_commit}."
 fi
 
 upstream_main_base=''
 if [[ "$is_tag" != true ]]; then
-  if ! upstream_main_base=$(gh api "repos/${REPOSITORY}/compare/${UPSTREAM_REPOSITORY%%/*}:${UPSTREAM_BRANCH}...${source_commit}" \
+  if ! upstream_main_base=$(retry gh api "repos/${REPOSITORY}/compare/${UPSTREAM_REPOSITORY%%/*}:${UPSTREAM_BRANCH}...${source_commit}" \
     --jq .merge_base_commit.sha); then
     echo "::warning::Could not compute the merge base with upstream ${UPSTREAM_BRANCH}; the base label reads upstream-main." >&2
     upstream_main_base=''
@@ -80,9 +84,9 @@ resolved=$(
 upstream_base_commit=''
 if [[ "$(sed -n 's/^release=//p' <<< "$resolved")" == true ]]; then
   base=$(sed -n 's/^base=//p' <<< "$resolved")
-  upstream_base_commit=$(gh api "repos/${UPSTREAM_REPOSITORY}/commits/refs/tags/${base}" --jq .sha) ||
+  upstream_base_commit=$(RETRY_ATTEMPTS=2 retry gh api "repos/${UPSTREAM_REPOSITORY}/commits/refs/tags/${base}" --jq .sha) ||
     fail "${source_ref} names upstream ${base} as its base, but ${UPSTREAM_REPOSITORY} has no tag ${base}."
-  status=$(gh api "repos/${REPOSITORY}/compare/${upstream_base_commit}...${source_commit}" --jq .status)
+  status=$(retry gh api "repos/${REPOSITORY}/compare/${upstream_base_commit}...${source_commit}" --jq .status)
   [[ "$status" == ahead || "$status" == identical ]] ||
     fail "${source_ref} (${source_commit}) does not contain upstream ${base} (${upstream_base_commit}); compare status '${status}'."
 fi

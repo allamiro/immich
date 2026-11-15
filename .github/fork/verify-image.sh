@@ -10,15 +10,19 @@
 #   EXPECTED_RUN_ID      run id of the build
 #   EXPECTED_COMMIT      full source commit
 #   EXPECTED_BUILD_IMAGE value of IMMICH_BUILD_IMAGE
+#   EXPECTED_SOURCE_REF  value of IMMICH_SOURCE_REF
 #   EXPECTED_PACKAGE     container package name
 #   EXPECTED_LABELS      key=value lines every platform and the index must carry
-#   EXPECTED_TAGS        space separated tags that must point at the digest
-#   EXPECTED_LATEST      true when latest must point at the digest, false when it must not
+#   EXPECTED_TAGS        space separated tags that must point at the digest; the channel tags
+#                        latest, edge and main must not point at it unless listed here
 #   EXPECTED_PLATFORMS   space separated platforms, default "linux/amd64 linux/arm64"
 #   REGISTRY_USER, REGISTRY_TOKEN  optional credentials for listing tags; anonymous otherwise
 #   SERVER_URL           default https://github.com
 
 set -euo pipefail
+
+# shellcheck source=SCRIPTDIR/tag-policy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tag-policy.sh"
 
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 <image> <manifest-list-digest>" >&2
@@ -28,7 +32,7 @@ fi
 image=$1
 digest=$2
 : "${EXPECTED_REPOSITORY:?}" "${EXPECTED_RUN_ID:?}" "${EXPECTED_COMMIT:?}" "${EXPECTED_BUILD_IMAGE:?}"
-: "${EXPECTED_PACKAGE:?}" "${EXPECTED_LABELS:?}" "${EXPECTED_TAGS:?}" "${EXPECTED_LATEST:?}"
+: "${EXPECTED_PACKAGE:?}" "${EXPECTED_LABELS:?}" "${EXPECTED_TAGS:?}" "${EXPECTED_SOURCE_REF:?}"
 platforms=${EXPECTED_PLATFORMS:-linux/amd64 linux/arm64}
 server_url=${SERVER_URL:-https://github.com}
 repository_url="${server_url}/${EXPECTED_REPOSITORY}"
@@ -46,10 +50,10 @@ problem() {
 }
 
 reference="${image}@${digest}"
-manifest=$(docker buildx imagetools inspect "$reference" --format '{{json .Manifest}}')
-configs=$(docker buildx imagetools inspect "$reference" --format '{{json .Image}}')
-provenance=$(docker buildx imagetools inspect "$reference" --format '{{json .Provenance}}')
-sbom=$(docker buildx imagetools inspect "$reference" --format '{{json .SBOM}}')
+manifest=$(retry docker buildx imagetools inspect "$reference" --format '{{json .Manifest}}')
+configs=$(retry docker buildx imagetools inspect "$reference" --format '{{json .Image}}')
+provenance=$(retry docker buildx imagetools inspect "$reference" --format '{{json .Provenance}}')
+sbom=$(retry docker buildx imagetools inspect "$reference" --format '{{json .SBOM}}')
 
 expected_env=$(
   cat << EOF
@@ -59,6 +63,7 @@ IMMICH_BUILD_IMAGE=${EXPECTED_BUILD_IMAGE}
 IMMICH_BUILD_IMAGE_URL=${repository_url}/pkgs/container/${EXPECTED_PACKAGE}
 IMMICH_REPOSITORY=${EXPECTED_REPOSITORY}
 IMMICH_REPOSITORY_URL=${repository_url}
+IMMICH_SOURCE_REF=${EXPECTED_SOURCE_REF}
 IMMICH_SOURCE_COMMIT=${EXPECTED_COMMIT}
 IMMICH_SOURCE_URL=${repository_url}/commit/${EXPECTED_COMMIT}
 EOF
@@ -164,11 +169,20 @@ while IFS= read -r pair; do
 done <<< "$EXPECTED_LABELS"
 
 tag_digest() {
-  docker buildx imagetools inspect "${image}:$1" --format '{{json .Manifest}}' 2> /dev/null | jq -r '.digest // empty' || true
+  local output errors
+  errors=$(mktemp)
+  if output=$(retry docker buildx imagetools inspect "${image}:$1" --format '{{json .Manifest}}' 2> "$errors"); then
+    jq -r '.digest // empty' <<< "$output"
+  elif grep -qi 'not found' "$errors"; then
+    echo ''
+  else
+    echo "error: $(tail -n 1 "$errors")"
+  fi
+  rm -f "$errors"
 }
 
 for tag in $EXPECTED_TAGS; do
-  actual=$(tag_digest "$tag")
+  actual=$(RETRY_ATTEMPTS=3 tag_digest "$tag")
   if [[ "$actual" == "$digest" ]]; then
     ok "tag ${tag} -> ${digest}"
   else
@@ -176,29 +190,53 @@ for tag in $EXPECTED_TAGS; do
   fi
 done
 
-latest_digest=$(tag_digest latest)
-if [[ "$EXPECTED_LATEST" == true && "$latest_digest" != "$digest" ]]; then
-  problem "latest points at '${latest_digest}', expected this build"
-elif [[ "$EXPECTED_LATEST" != true && "$latest_digest" == "$digest" ]]; then
-  problem "latest points at this build, which is not the newest stable fork release"
-else
-  ok "latest -> ${latest_digest:-absent}"
-fi
+for tag in $PROMOTED_TAGS; do
+  if grep -qxF "$tag" <<< "$(tr ' ' '\n' <<< "$EXPECTED_TAGS")"; then
+    continue
+  fi
+  actual=$(RETRY_ATTEMPTS=1 tag_digest "$tag")
+  if [[ "$actual" == "$digest" ]]; then
+    problem "${tag} points at this build, which should not move it"
+  else
+    ok "${tag} not moved to this build (${actual:-absent})"
+  fi
+done
 
 repository_path=${image#*/}
 registry=${image%%/*}
 scope="repository:${repository_path}:pull"
 if [[ -n "${REGISTRY_TOKEN:-}" ]]; then
-  token=$(curl -fsS -u "${REGISTRY_USER:-token}:${REGISTRY_TOKEN}" "https://${registry}/token?scope=${scope}" | jq -r .token)
+  token=$(retry curl -fsS -u "${REGISTRY_USER:-token}:${REGISTRY_TOKEN}" "https://${registry}/token?scope=${scope}" | jq -r .token)
 else
-  token=$(curl -fsS "https://${registry}/token?scope=${scope}" | jq -r .token)
+  token=$(retry curl -fsS "https://${registry}/token?scope=${scope}" | jq -r .token)
 fi
-all_tags=$(curl -fsS -H "Authorization: Bearer ${token}" "https://${registry}/v2/${repository_path}/tags/list?n=10000" | jq -r '.tags[]?')
-bad_tags=$(grep -E '^v?[0-9]+\.[0-9]+' <<< "$all_tags" | grep -vE '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?-fork\.[0-9]+$' || true)
+headers=$(mktemp)
+trap 'rm -f "$headers"' EXIT
+all_tags=''
+next="/v2/${repository_path}/tags/list?n=1000"
+pages=0
+while [[ -n "$next" ]]; do
+  page=$(retry curl -fsS -D "$headers" -H "Authorization: Bearer ${token}" "https://${registry}${next}")
+  all_tags+=$(jq -r '.tags[]?' <<< "$page")$'\n'
+  next=$(sed -nE 's/^[Ll]ink: *<([^>]+)>.*rel="?next"?.*/\1/p' "$headers" | tr -d '\r')
+  pages=$((pages + 1))
+  if [[ "$pages" -gt 100 ]]; then
+    problem "registry: more than 100 pages of tags"
+    break
+  fi
+done
+all_tags=$(awk 'NF' <<< "$all_tags")
+bad_tags=''
+while IFS= read -r tag; do
+  [[ -n "$tag" ]] || continue
+  if is_foreign_tag "$tag"; then
+    bad_tags+="${tag} "
+  fi
+done <<< "$all_tags"
 if [[ -z "$bad_tags" ]]; then
-  ok "registry: $(grep -c . <<< "$all_tags") tags, none carries an upstream release name"
+  ok "registry: $(grep -c . <<< "$all_tags") tags in ${pages} page(s), none looks like an upstream release or a foreign channel"
 else
-  problem "registry: tags that look like upstream releases: $(paste -sd ' ' - <<< "$bad_tags")"
+  problem "registry: tags that look like upstream releases or channels this fork does not publish: ${bad_tags}"
 fi
 
 if [[ "$problems" -gt 0 ]]; then

@@ -72,7 +72,7 @@ refuse() {
 existing=$'v3.4.0-fork.1\nv3.4.0-fork.2\nv3.4.1-fork.1\nv3.5.0-rc.1-fork.1\nv3.4.1\nv3.3.9'
 
 accept 'default branch' SOURCE_REF=main UPSTREAM_MAIN_BASE="$upstream" -- \
-  release=false latest=false tags='main 0123456 edge' version=main build-image=main \
+  release=false latest=false tags='0123456' promote-tags='main edge' version=main build-image=main \
   base="upstream-main@${upstream}" \
   'description=Unofficial fork build of upstream Immich main at e5d6eb7be with the changes of allamiro/immich. Not affiliated with or endorsed by the Immich project or FUTO.' \
   docs-url="https://github.com/allamiro/immich/blob/${commit}/FORK.md" image=ghcr.io/allamiro/immich-server-allamiro \
@@ -83,24 +83,28 @@ accept 'default branch' SOURCE_REF=main UPSTREAM_MAIN_BASE="$upstream" -- \
   org.opencontainers.image.revision="$commit" org.opencontainers.image.version=main \
   org.opencontainers.image.licenses=AGPL-3.0 io.github.allamiro.fork.base="upstream-main@${upstream}" \
   io.github.allamiro.fork.unofficial=true
-accept 'default branch without merge base' SOURCE_REF=main -- base=upstream-main tags='main 0123456 edge'
+accept 'default branch without merge base' SOURCE_REF=main -- base=upstream-main tags='0123456' promote-tags='main edge'
 accept 'validation branch' SOURCE_REF=fork/identity UPSTREAM_MAIN_BASE="$upstream" -- \
-  release=false tags='fork-identity 0123456' version=fork-identity cache-scope=fork-identity
+  release=false tags='fork-identity 0123456' promote-tags='' version=fork-identity cache-scope=fork-identity
 accept 'stable branch, not a tag' SOURCE_REF=fork/v3.4.1 PACKAGE_VERSION=3.4.1 -- release=false tags='fork-v3.4.1 0123456'
+accept 'branch starting with digits only' SOURCE_REF=123-fix -- release=false tags='123-fix 0123456'
+accept 'commit given as a full SHA' SOURCE_REF=8c979c452a5b6f0b3a1c2d4e5f60718293a4b5c6 -- release=false \
+  tags='8c979c452a5b6f0b3a1c2d4e5f60718293a4b5c6 0123456'
+accept 'branch with release in the middle' SOURCE_REF=feat/release-notes -- tags='feat-release-notes 0123456'
 accept 'first stable fork release' SOURCE_REF=v3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1 -- \
-  release=true prerelease=false latest=true tags='v3.4.1-fork.1 0123456 latest' version=v3.4.1-fork.1 base=v3.4.1 \
+  release=true prerelease=false latest=true tags='v3.4.1-fork.1 0123456' promote-tags=latest version=v3.4.1-fork.1 base=v3.4.1 \
   previous-tag='' 'description=Unofficial fork build of upstream Immich release v3.4.1 with the changes of allamiro/immich. Not affiliated with or endorsed by the Immich project or FUTO.' \
   'org.opencontainers.image.description=Unofficial fork build of upstream Immich release v3.4.1 with the changes of allamiro/immich. Not affiliated with or endorsed by the Immich project or FUTO.' \
   org.opencontainers.image.version=v3.4.1-fork.1 io.github.allamiro.fork.base=v3.4.1 \
   org.opencontainers.image.documentation="https://github.com/allamiro/immich/blob/${commit}/FORK.md"
 accept 'second build of the same release' SOURCE_REF=v3.4.1-fork.2 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.2 FORK_TAGS="$existing" -- \
-  release=true latest=true tags='v3.4.1-fork.2 0123456 latest' base=v3.4.1 previous-tag=v3.4.1-fork.1
+  release=true latest=true tags='v3.4.1-fork.2 0123456' promote-tags=latest base=v3.4.1 previous-tag=v3.4.1-fork.1
 accept 'rebuild of an older release keeps latest' SOURCE_REF=v3.4.0-fork.2 IS_TAG=true PACKAGE_VERSION=3.4.0-fork.2 FORK_TAGS="$existing" -- \
-  release=true latest=false tags='v3.4.0-fork.2 0123456' base=v3.4.0 previous-tag=v3.4.0-fork.1
+  release=true latest=false tags='v3.4.0-fork.2 0123456' promote-tags='' base=v3.4.0 previous-tag=v3.4.0-fork.1
 accept 'fork.10 sorts after fork.9' SOURCE_REF=v3.4.1-fork.10 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.10 FORK_TAGS=$'v3.4.1-fork.9\nv3.4.1-fork.2' -- \
   latest=true previous-tag=v3.4.1-fork.9
 accept 'release candidate' SOURCE_REF=v3.5.0-rc.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.5.0-rc.1-fork.1 FORK_TAGS="$existing" -- \
-  release=true prerelease=true latest=false tags='v3.5.0-rc.1-fork.1 0123456' base=v3.5.0-rc.1
+  release=true prerelease=true latest=false tags='v3.5.0-rc.1-fork.1 0123456' promote-tags='' base=v3.5.0-rc.1
 accept 'FORK.md missing in the source' SOURCE_REF=v3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1 FORK_DOC_IN_SOURCE=false WORKFLOW_COMMIT=fedcba9876543210fedcba9876543210fedcba98 -- \
   docs-url=https://github.com/allamiro/immich/blob/fedcba9876543210fedcba9876543210fedcba98/FORK.md
 
@@ -119,6 +123,21 @@ refuse 'package.json of another build' SOURCE_REF=v3.4.1-fork.2 IS_TAG=true PACK
 refuse 'package.json missing' SOURCE_REF=v3.4.1-fork.1 IS_TAG=true
 refuse 'branch named latest' SOURCE_REF=latest
 refuse 'branch named edge' SOURCE_REF=edge
+refuse 'branch named main that is not the default branch' SOURCE_REF=main DEFAULT_BRANCH=trunk
+refuse 'branch named Latest' SOURCE_REF=Latest
+refuse 'branch named release' SOURCE_REF=release
+refuse 'branch named stable' SOURCE_REF=stable
+refuse 'branch named MASTER' SOURCE_REF=MASTER
+refuse 'branch -v3.4.1 sanitized to v3.4.1' SOURCE_REF=-v3.4.1
+refuse 'branch --3.4.1 sanitized to 3.4.1' SOURCE_REF=--3.4.1
+refuse 'branch .v3.4 sanitized to v3.4' SOURCE_REF=.v3.4
+refuse 'branch V3.4.1' SOURCE_REF=V3.4.1
+refuse 'branch v3' SOURCE_REF=v3
+refuse 'branch v3.4' SOURCE_REF=v3.4
+refuse 'branch 3.4' SOURCE_REF=3.4
+refuse 'branch v2-hotfix' SOURCE_REF=v2-hotfix
+refuse 'tag V3.4.1-fork.1 in upper case' SOURCE_REF=V3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1
+refuse 'ref with a space' SOURCE_REF='a b'
 
 created=$(field org.opencontainers.image.created "$(run SOURCE_REF=main)")
 if [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
@@ -127,8 +146,17 @@ else
   echo "FAIL created label '${created}'"
   failures=$((failures + 1))
 fi
-labels=$(run SOURCE_REF=v3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1 | sed -n '/^labels<<FORK_LABELS$/,/^FORK_LABELS$/p')
-if [[ $(grep -c . <<< "$labels") -eq 13 ]] && ! grep -qiE 'immich-app|vendor' <<< "$labels"; then
+output=$(run SOURCE_REF=v3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1)
+delimiter=$(sed -n 's/^labels<<//p' <<< "$output")
+labels=$(awk -v d="$delimiter" '$0 == "labels<<" d { on = 1; next } $0 == d { on = 0 } on' <<< "$output")
+second_delimiter=$(run SOURCE_REF=v3.4.1-fork.1 IS_TAG=true PACKAGE_VERSION=3.4.1-fork.1 | sed -n 's/^labels<<//p')
+if [[ "$delimiter" =~ ^FORK_EOF_[0-9a-f]{24}$ && "$delimiter" != "$second_delimiter" ]]; then
+  echo "ok   random output delimiter ${delimiter}"
+else
+  echo "FAIL output delimiter '${delimiter}' / '${second_delimiter}'"
+  failures=$((failures + 1))
+fi
+if [[ $(grep -c . <<< "$labels") -eq 11 ]] && ! grep -qiE 'immich-app|vendor' <<< "$labels"; then
   echo "ok   labels block: 11 labels, no immich-app, no vendor"
   while IFS= read -r line; do echo "     ${line}"; done <<< "$labels"
 else
