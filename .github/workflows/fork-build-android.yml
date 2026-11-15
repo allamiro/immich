@@ -1,0 +1,216 @@
+name: Fork Build Android
+
+# Builds the Android APKs of this fork. A release tag must pass the same rules as Fork Build Image
+# (.github/fork/resolve.sh: vX.Y.Z[-pre]-fork.N, server/package.json carries that version, upstream
+# base contained). Fork Build Image owns the GitHub release; this workflow only attaches APKs to the
+# existing release, and only APKs signed with the release keystore. Debug-signed APKs stay a
+# workflow artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build. Empty builds the branch the workflow is started from.
+        required: false
+        type: string
+  push:
+    tags: ['v*-fork.*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    if: ${{ github.repository_owner != 'immich-app' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.source.outputs.release }}
+      release-tag: ${{ steps.source.outputs.release == 'true' && steps.source.outputs.source-ref || '' }}
+      source-commit: ${{ steps.source.outputs.source-commit }}
+      signing: ${{ steps.keystore.outputs.signing }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Checkout fork tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .fork-tools
+          sparse-checkout: .github/fork
+          persist-credentials: false
+
+      - name: Resolve source and apply the release rules
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REF: ${{ inputs.ref }}
+          TRIGGER_REF_NAME: ${{ github.ref_name }}
+          TRIGGER_REF_TYPE: ${{ github.ref_type }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          SOURCE_DIR: .
+        run: .fork-tools/.github/fork/resolve.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore Rust Cache
+        id: cache-rust-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: fork-build-android-rust-${{ runner.os }}-${{ hashFiles('native/crates/native_core_ffi/rust-toolchain.toml', 'native/Cargo.lock') }}
+          restore-keys: |
+            fork-build-android-rust-${{ runner.os }}-
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./mobile
+
+      - name: Create the Keystore
+        id: keystore
+        env:
+          KEY_JKS: ${{ secrets.KEY_JKS }}
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        working-directory: ./mobile
+        run: |
+          if [[ -n "$KEY_JKS" && -n "$ALIAS" && -n "$ANDROID_KEY_PASSWORD" && -n "$ANDROID_STORE_PASSWORD" ]]; then
+            printf "%s" "$KEY_JKS" | base64 -d > android/key.jks
+            echo "signing=release" | tee -a "$GITHUB_OUTPUT"
+          else
+            rm -f android/key.jks
+            echo "signing=debug" | tee -a "$GITHUB_OUTPUT"
+            echo "::notice::KEY_JKS, ALIAS, ANDROID_KEY_PASSWORD and ANDROID_STORE_PASSWORD are not all set, so the APK is signed with the debug key."
+          fi
+
+      - name: Restore Gradle Cache
+        id: cache-gradle-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/android/.gradle
+          key: fork-build-android-gradle-${{ runner.os }}-${{ hashFiles('mobile/android/**/*.gradle', 'mobile/android/gradle/wrapper/gradle-wrapper.properties', 'mobile/pubspec.lock') }}
+          restore-keys: |
+            fork-build-android-gradle-${{ runner.os }}-
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+        with:
+          packages: ''
+
+      - name: Install dependencies
+        run: mise //mobile:install:ci
+
+      - name: Perform codegen
+        run: mise //mobile:codegen
+
+      - name: Build Android APKs
+        working-directory: ./mobile
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          flutter build apk --release
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+
+      - name: Publish Android Artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: android-apk-${{ steps.keystore.outputs.signing }}-signed
+          path: mobile/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Keep debug-signed APKs off the release
+        if: ${{ steps.source.outputs.release == 'true' && steps.keystore.outputs.signing != 'release' }}
+        env:
+          RELEASE_TAG: ${{ steps.source.outputs.source-ref }}
+        run: echo "::warning::The APKs are signed with the debug key, so they are not attached to the release ${RELEASE_TAG}. They are only available as the workflow artifact of this run."
+
+      - name: Remove the Keystore
+        if: ${{ always() }}
+        run: rm -f mobile/android/key.jks
+
+      - name: Save Gradle Cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: ${{ github.ref_name == github.event.repository.default_branch && steps.cache-gradle-restore.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/android/.gradle
+          key: ${{ steps.cache-gradle-restore.outputs.cache-primary-key }}
+
+      - name: Save Rust Cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: ${{ github.ref_name == github.event.repository.default_branch && steps.cache-rust-restore.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cache-rust-restore.outputs.cache-primary-key }}
+
+  attach-apks:
+    name: Attach APKs to the release
+    needs: build-apk
+    if: ${{ github.repository_owner != 'immich-app' && needs.build-apk.outputs.release == 'true' && needs.build-apk.outputs.signing == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build-apk.outputs.release-tag }}
+    steps:
+      - name: Download APKs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: android-apk-release-signed
+          path: ${{ runner.temp }}/apk
+
+      - name: Wait for the release from Fork Build Image
+        run: |
+          for attempt in $(seq 1 60); do
+            if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" --json tagName > /dev/null 2>&1; then
+              echo "Release ${RELEASE_TAG} exists."
+              exit 0
+            fi
+            echo "Release ${RELEASE_TAG} does not exist yet (check ${attempt} of 60); Fork Build Image creates it."
+            sleep 60
+          done
+          echo "::error::Release ${RELEASE_TAG} still does not exist after 60 minutes. Run Fork Build Image for ${RELEASE_TAG}, then re-run this job. This workflow never creates a release."
+          exit 1
+
+      - name: Attach the APKs
+        working-directory: ${{ runner.temp }}/apk
+        run: gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber ./*.apk
