@@ -11,6 +11,7 @@ permissions: {}
 
 jobs:
   tag:
+    if: ${{ github.repository == 'immich-app/immich' }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
