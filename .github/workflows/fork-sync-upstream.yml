@@ -519,7 +519,8 @@ jobs:
 
           # Fork Build Image only publishes a release tag whose server/package.json carries the tag's
           # version. The default branch follows upstream's version, so it is normally not taggable.
-          package_version=$(git show "${DEFAULT_BRANCH_SHA}:server/package.json" | jq -r '.version // empty' || true)
+          package_version=$(git show "${DEFAULT_BRANCH_SHA}:server/package.json" | jq -r '.version // empty' | head -n 1 || true)
+          package_version=$(tr -cd 'A-Za-z0-9.+-' <<< "$package_version" | cut -c 1-64)
           if [[ "$package_version" != "${fork_tag#v}" ]]; then
             echo "::warning::Not tagging ${fork_tag}: server/package.json at ${DEFAULT_BRANCH_SHA::9} reads '${package_version}', not '${fork_tag#v}'."
             {
@@ -542,7 +543,6 @@ jobs:
         if: ${{ steps.release.outputs.state == 'blocked' }}
         env:
           HAS_ISSUES: ${{ steps.fork.outputs.has-issues }}
-          DEFAULT_BRANCH_SHA: ${{ steps.publish.outputs.pushed-to-default-branch == 'true' && steps.publish.outputs.published-sha || steps.compare.outputs.fork-sha }}
           UPSTREAM_RELEASE: ${{ steps.release.outputs.upstream-release }}
           UPSTREAM_RELEASE_SHA: ${{ steps.release.outputs.upstream-release-sha }}
           BLOCKED_TAG: ${{ steps.release.outputs.blocked-tag }}
@@ -553,7 +553,7 @@ jobs:
           {
             echo "Upstream released [${UPSTREAM_RELEASE}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${UPSTREAM_RELEASE}) and the fork default branch contains it, but the fork release \`${BLOCKED_TAG}\` was not tagged."
             echo
-            echo "Fork Build Image publishes a release tag only when \`server/package.json\` at the tagged commit reads the tag's version, so the image tag, its labels, the About page and the source agree. At \`${DEFAULT_BRANCH_SHA}\` it reads \`${BLOCKED_VERSION:-nothing}\`, not \`${BLOCKED_TAG#v}\`."
+            echo "Fork Build Image publishes a release tag only when \`server/package.json\` at the tagged commit reads the tag's version, so the image tag, its labels, the About page and the source agree. On the default branch it reads \`${BLOCKED_VERSION:-nothing}\`, not \`${BLOCKED_TAG#v}\`."
             echo
             echo "To cut the release by hand:"
             echo
@@ -590,7 +590,7 @@ jobs:
             gh issue edit "$issue_number" --repo "$REPOSITORY" \
               --title "Fork release ${BLOCKED_TAG} needs a version bump" --body-file "$issue_body"
             gh issue comment "$issue_number" --repo "$REPOSITORY" \
-              --body "The description is updated for \`${BLOCKED_TAG}\` at \`${DEFAULT_BRANCH_SHA}\`. Run: ${RUN_URL}"
+              --body "The description is updated for \`${BLOCKED_TAG}\`. Run: ${RUN_URL}"
           fi
 
       - name: Close the fork release issue
@@ -598,10 +598,15 @@ jobs:
         env:
           RELEASE_STATE: ${{ steps.release.outputs.state }}
         run: |
+          case "$RELEASE_STATE" in
+            covered) comment="A fork release tag now covers the latest upstream release." ;;
+            taggable) comment="The default branch now carries the fork release version, so the release job can tag it." ;;
+            not-contained) comment="The latest upstream release is not in the default branch, so no fork release is waiting for a tag here. A stable release from an upstream release branch is cut by hand." ;;
+            *) exit 0 ;;
+          esac
           gh issue list --repo "$REPOSITORY" --state open --label "$RELEASE_BLOCKED_LABEL" --json number --jq '.[].number' |
             while IFS= read -r issue_number; do
-              gh issue close "$issue_number" --repo "$REPOSITORY" \
-                --comment "No fork release is blocked any more (release state: ${RELEASE_STATE}). Run: ${RUN_URL}"
+              gh issue close "$issue_number" --repo "$REPOSITORY" --comment "${comment} Run: ${RUN_URL}"
             done
 
       - name: Plan the regression and mutation gate
