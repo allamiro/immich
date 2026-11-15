@@ -7,8 +7,9 @@
 #   ENV IMMICH_BUILD_URL, ENV IMMICH_BUILD_IMAGE_URL, ENV IMMICH_REPOSITORY,
 #   ENV IMMICH_REPOSITORY_URL, ENV IMMICH_SOURCE_URL
 # in place and prints the diff. Exits non-zero without touching the file when a line is missing,
-# duplicated or continued, and exits non-zero after the rewrite when any ENV or LABEL line still
-# names immich-app. The server shows these values in /api/server/about and in the About dialog.
+# duplicated or continued, and exits non-zero after the rewrite when any line other than the
+# FROM lines of upstream's base-server images still names immich-app. The server shows these
+# values in /api/server/about and in the About dialog.
 
 set -euo pipefail
 
@@ -91,9 +92,10 @@ for key in "${keys[@]}"; do
   fi
 done
 
-leftovers=$(grep -nE '^[[:space:]]*(ENV|LABEL)[[:space:]].*immich-app' "$rewritten" || true)
+allowed_base_image='^FROM ghcr\.io/immich-app/base-server-(dev|prod):[A-Za-z0-9._-]+(@sha256:[0-9a-f]{64})?( AS [A-Za-z0-9_-]+)?$'
+leftovers=$(grep -niE 'immich-app' "$rewritten" | grep -vE "^[0-9]+:${allowed_base_image#^}" || true)
 if [[ -n "$leftovers" ]]; then
-  fail "ENV or LABEL lines still name immich-app after the rewrite: $(tr '\n' ' ' <<< "$leftovers")"
+  fail "Lines still name immich-app after the rewrite (only the base-server FROM lines may): $(tr '\n' ' ' <<< "$leftovers")"
 fi
 
 cp "$rewritten" "$dockerfile"

@@ -87,6 +87,18 @@ for ref in "${refs[@]}"; do
   awk '{ print } /^ENV IMMICH_SOURCE_URL=/ { print "LABEL org.opencontainers.image.source=https://github.com/immich-app/immich" }' "$base" > "$file"
   expect_failure "${ref}: LABEL naming immich-app" "$file" "$repository" "$run_id" "$commit" "$package"
 
+  file="${base}.run-line"
+  awk '{ print } /^ENV IMMICH_SOURCE_URL=/ { print "RUN echo https://github.com/immich-app/immich > /etc/immich-source" }' "$base" > "$file"
+  expect_failure "${ref}: RUN line naming immich-app" "$file" "$repository" "$run_id" "$commit" "$package"
+
+  file="${base}.other-image"
+  awk '{ print } /^ENV IMMICH_SOURCE_URL=/ { print "COPY --from=ghcr.io/immich-app/immich-server:release /x /x" }' "$base" > "$file"
+  expect_failure "${ref}: COPY from another immich-app image" "$file" "$repository" "$run_id" "$commit" "$package"
+
+  file="${base}.other-from"
+  sed 's|^FROM ghcr.io/immich-app/base-server-prod:|FROM ghcr.io/immich-app/immich-server-prod:|' "$base" > "$file"
+  expect_failure "${ref}: FROM another immich-app image" "$file" "$repository" "$run_id" "$commit" "$package"
+
   file="${base}.continued"
   sed 's|^ENV IMMICH_REPOSITORY=.*|ENV IMMICH_REPOSITORY=immich-app/immich \\|' "$base" > "$file"
   expect_failure "${ref}: continued ENV line" "$file" "$repository" "$run_id" "$commit" "$package"
