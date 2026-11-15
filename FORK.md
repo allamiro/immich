@@ -32,7 +32,7 @@ The image contains the server and the bundled web app. The machine-learning cont
 | `<short commit>` | The exact commit the image was built from. |
 | other names | Test builds of other branches, for example `fork-identity`. Do not use them. |
 
-No image of this fork is ever tagged with an upstream release name such as `v3.4.1`.
+No image of this fork is ever tagged with an upstream release name such as `v3.4.1`, and a published `vX.Y.Z-fork.N` tag is never moved to another commit. `latest`, `edge` and `main` move only after the new image passed the build's checks.
 
 Every image names this repository as its source. The About dialog and `/api/server/about` link to this repository, to the workflow run that built the image and to the commit; the build rewrites those lines of `server/Dockerfile` with `.github/fork/rebrand-dockerfile.sh` before building. The image labels say the same: `org.opencontainers.image.title` is "Immich Allamiro (unofficial fork build)", `io.github.allamiro.fork.unofficial` is `true`, `io.github.allamiro.fork.base` names the upstream release (or the upstream `main` commit) the build is based on, and `org.opencontainers.image.revision` is the commit.
 
@@ -47,7 +47,7 @@ immich-server:
 
 ## Releases
 
-Each `vX.Y.Z-fork.N` tag has a GitHub release in this repository: <https://github.com/allamiro/immich/releases>. Its notes are written by the build from facts: the upstream release it is based on, the fork commit and its changes, the image digest and platforms. Upstream's release notes describe upstream's changes only.
+Each `vX.Y.Z-fork.N` tag has a GitHub release in this repository: <https://github.com/allamiro/immich/releases>. Its notes are written by the build from facts: the upstream release it is based on, the fork commit and its changes, the image digest and platforms. Upstream's release notes describe upstream's changes only. Android APKs are attached to the same release only when they are signed with this repository's release keystore.
 
 ## Verifying an image
 
@@ -75,7 +75,20 @@ Such a build keeps upstream's links in the About dialog. To point them at this r
 
 ## Mobile apps
 
-No official or signed mobile builds are published from this fork. Build the app from source following the upstream mobile documentation. Builds from this repository use the upstream application identifiers unless you change them, so do not install one over the official app.
+The mobile app of this fork is named Immich Allamiro and has its own identifiers, so it installs next to the official Immich app instead of replacing it:
+
+| Platform | Release | Debug |
+| --- | --- | --- |
+| Android application id | `io.github.allamiro.immichfork` | `io.github.allamiro.immichfork.debug` |
+| iOS bundle id | `io.github.allamiro.immichfork` | `io.github.allamiro.immichforkdev` |
+
+There are no store builds. Every build is made locally or by this repository's workflow and signed with whatever key the builder has. Without a release keystore, a release APK is signed with the Android debug key, which is public; never distribute such an APK, and sign builds you share with your own keystore. The workflow attaches APKs to a GitHub release only when they are signed with the repository's release keystore. iOS builds are signed with your own Apple team.
+
+Known overlaps with the official app when both are installed:
+
+- Both apps register the `immich://` URL scheme and the `app.immich` scheme used for the OAuth login callback, because servers register `app.immich:///oauth-callback`. Android then asks which app should open the link; on iOS which app opens it is undefined.
+- Universal links and passkeys for `my.immich.app` do not work with the fork's identifiers.
+- A free Apple Personal Team may refuse the Associated Domains capability; remove it from your local signing setup if Xcode rejects it.
 
 ## Reporting problems
 
