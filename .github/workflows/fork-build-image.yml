@@ -10,6 +10,9 @@ name: Fork Build Image
 # Two runner acquisitions in sequence: the native amd64 and arm64 builds in parallel, then one
 # publish job. Each job runs .github/fork/resolve.sh, which derives tags, labels and the release
 # rules from the ref alone, so no job outputs are passed and a gate fails before anything is pushed.
+# The publish job pushes only the release or branch tag and the commit tag, checks the published
+# image, and moves latest, edge or main only after every check passed. A newer run for the same ref
+# cancels older builds but never a publish job that has started.
 
 on:
   workflow_dispatch:
@@ -21,10 +24,6 @@ on:
   push:
     branches: [main]
     tags: ['v*-fork.*']
-
-concurrency:
-  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name }}
-  cancel-in-progress: true
 
 permissions: {}
 
@@ -52,6 +51,9 @@ jobs:
       }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-build-${{ inputs.ref || github.ref_name }}-${{ matrix.platform-pair }}
+      cancel-in-progress: true
     permissions:
       contents: read
       packages: write
@@ -148,6 +150,7 @@ jobs:
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   publish:
     name: Publish, attest, verify and release
@@ -155,6 +158,9 @@ jobs:
     if: ${{ github.repository_owner != 'immich-app' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: ${{ github.workflow }}-publish-${{ inputs.ref || github.ref_name }}
+      cancel-in-progress: false
     permissions:
       contents: write # only the release step writes: it creates or edits the GitHub release
       packages: write
@@ -237,7 +243,36 @@ jobs:
             exit 1
           fi
 
-      - name: Create manifest list and push tags
+      - name: Refuse to move a published release or commit tag
+        env:
+          IMAGE: ${{ steps.source.outputs.image }}
+          TAGS: ${{ steps.source.outputs.tags }}
+          RELEASE: ${{ steps.source.outputs.release }}
+          SOURCE_REF: ${{ steps.source.outputs.source-ref }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source-commit }}
+        run: |
+          for tag in ${TAGS}; do
+            if [[ "$tag" != "${SOURCE_COMMIT::7}" ]] && [[ "$RELEASE" != true || "$tag" != "$SOURCE_REF" ]]; then
+              continue
+            fi
+            errors="${RUNNER_TEMP}/inspect-errors"
+            if ! config=$(docker buildx imagetools inspect "${IMAGE}:${tag}" --format '{{json .Image}}' 2> "$errors"); then
+              if grep -qi 'not found' "$errors"; then
+                echo "${IMAGE}:${tag} does not exist yet."
+                continue
+              fi
+              cat "$errors"
+              exit 1
+            fi
+            revisions=$(jq -r 'if has("config") then [.] else [.[]] end | map(.config.Labels["org.opencontainers.image.revision"] // "none") | unique | join(" ")' <<< "$config")
+            if [[ "$revisions" != "$SOURCE_COMMIT" ]]; then
+              echo "::error::${IMAGE}:${tag} already exists with revision '${revisions}', not ${SOURCE_COMMIT}. Published release and commit tags are never moved; make a new fork release instead."
+              exit 1
+            fi
+            echo "${IMAGE}:${tag} exists for the same commit; it is rebuilt in place."
+          done
+
+      - name: Create manifest list and push the release or branch tags
         working-directory: ${{ runner.temp }}/digests
         env:
           IMAGE: ${{ steps.source.outputs.image }}
@@ -289,10 +324,10 @@ jobs:
           EXPECTED_RUN_ID: ${{ github.run_id }}
           EXPECTED_COMMIT: ${{ steps.source.outputs.source-commit }}
           EXPECTED_BUILD_IMAGE: ${{ steps.source.outputs.build-image }}
+          EXPECTED_SOURCE_REF: ${{ steps.source.outputs.source-ref }}
           EXPECTED_PACKAGE: ${{ steps.source.outputs.package }}
           EXPECTED_LABELS: ${{ steps.source.outputs.labels }}
           EXPECTED_TAGS: ${{ steps.source.outputs.tags }}
-          EXPECTED_LATEST: ${{ steps.source.outputs.latest }}
           EXPECTED_PLATFORMS: ${{ env.PLATFORMS }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ github.token }}
@@ -320,11 +355,32 @@ jobs:
             "${RUNNER_TEMP}/attestation.json"
           jq -r '.[].verificationResult.statement.subject[] | "Subject: \(.name)@sha256:\(.digest.sha256)"' "${RUNNER_TEMP}/attestation.json"
 
+      - name: Move latest, edge or main to the verified image
+        if: ${{ steps.source.outputs.promote-tags != '' }}
+        env:
+          IMAGE: ${{ steps.source.outputs.image }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          PROMOTE_TAGS: ${{ steps.source.outputs.promote-tags }}
+        run: |
+          arguments=()
+          for tag in ${PROMOTE_TAGS}; do
+            arguments+=(--tag "${IMAGE}:${tag}")
+          done
+          docker buildx imagetools create "${arguments[@]}" "${IMAGE}@${DIGEST}"
+          for tag in ${PROMOTE_TAGS}; do
+            actual=$(docker buildx imagetools inspect "${IMAGE}:${tag}" --format '{{json .Manifest}}' | jq -r .digest)
+            if [[ "$actual" != "$DIGEST" ]]; then
+              echo "::error::${IMAGE}:${tag} points at ${actual}, expected ${DIGEST}."
+              exit 1
+            fi
+            echo "${IMAGE}:${tag} -> ${DIGEST}"
+          done
+
       - name: Summarize
         env:
           IMAGE: ${{ steps.source.outputs.image }}
           DIGEST: ${{ steps.digest.outputs.digest }}
-          TAGS: ${{ steps.source.outputs.tags }}
+          TAGS: ${{ steps.source.outputs.tags }} ${{ steps.source.outputs.promote-tags }}
           SOURCE_REF: ${{ steps.source.outputs.source-ref }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source-commit }}
           BASE: ${{ steps.source.outputs.base }}
@@ -365,10 +421,11 @@ jobs:
           if [[ "$changes" == unknown ]]; then
             echo "::warning::Could not list the files that differ from upstream ${BASE}; the notes say so."
           fi
+          delimiter="FORK_EOF_$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
           {
-            echo 'changes<<FORK_MIGRATIONS'
+            echo "changes<<${delimiter}"
             echo "$changes"
-            echo 'FORK_MIGRATIONS'
+            echo "$delimiter"
           } | tee -a "$GITHUB_OUTPUT"
 
       - name: Write the release notes
