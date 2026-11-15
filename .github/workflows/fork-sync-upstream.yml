@@ -9,7 +9,10 @@
 #   3. gate-report opens or updates one issue labelled feature-regression-failure when the gate is red
 #                  and closes it when the gate is green.
 #   4. release     tags <upstream release>-fork.N and starts the image and Android builds, only when the
-#                  gate is green for the exact commit on the default branch.
+#                  gate is green for the exact commit on the default branch and its server/package.json
+#                  already reads <upstream release without v>-fork.N. Fork Build Image refuses any other
+#                  release tag. When the version does not match, nothing is tagged and one issue labelled
+#                  fork-release-blocked says how to cut the release by hand.
 #
 # The gate also runs without a new merge while the regression issue is open or an upstream release is
 # waiting for its fork tag, so a fix pushed by hand closes the issue and releases on the next run.
@@ -60,6 +63,8 @@ env:
   UPSTREAM_BRANCH: main
   CONFLICT_LABEL: upstream-sync-conflict
   REGRESSION_LABEL: feature-regression-failure
+  RELEASE_BLOCKED_LABEL: fork-release-blocked
+  FORK_TAG_PATTERN: '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?-fork\.[0-9]+$'
   WORKFLOWS_DIRECTORY: .github/workflows
 
 jobs:
@@ -86,6 +91,7 @@ jobs:
       pull-request: ${{ steps.publish.outputs.pull-request }}
       default-branch-sha: ${{ steps.gate.outputs.default-branch-sha }}
       release-tag: ${{ steps.release.outputs.fork-tag }}
+      release-state: ${{ steps.release.outputs.state }}
       upstream-release: ${{ steps.release.outputs.upstream-release }}
       regression-issue: ${{ steps.gate.outputs.regression-issue }}
       gate-ref: ${{ steps.gate.outputs.gate-ref }}
@@ -478,15 +484,18 @@ jobs:
           upstream_release=$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name || true)
           if [[ ! "$upstream_release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::warning::Skipping release detection, the latest upstream release tag reads '${upstream_release}'."
+            echo "state=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if ! release_sha=$(git rev-parse --quiet --verify "refs/upstream-tags/${upstream_release}^{commit}"); then
             echo "::warning::Upstream release ${upstream_release} has no fetched tag."
+            echo "state=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if ! git merge-base --is-ancestor "$release_sha" "$DEFAULT_BRANCH_SHA"; then
             echo "Upstream release ${upstream_release} is not contained in the fork default branch yet."
+            echo "state=not-contained" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -496,15 +505,109 @@ jobs:
             newest=$(printf '%s\n' "$latest_fork_base" "$upstream_release" | sort --version-sort | tail -n 1)
             if [[ "$latest_fork_base" == "$upstream_release" || "$newest" != "$upstream_release" ]]; then
               echo "Fork tag ${latest_fork_tag} already covers upstream release ${upstream_release}."
+              echo "state=covered" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
 
           last_build_number=$(git tag --list "${upstream_release}-fork.*" | sed -E 's/^.*-fork\.([0-9]+)$/\1/' | sort --numeric-sort | tail -n 1)
+          fork_tag="${upstream_release}-fork.$((${last_build_number:-0} + 1))"
+          if [[ ! "$fork_tag" =~ $FORK_TAG_PATTERN ]]; then
+            echo "::error::Computed fork tag '${fork_tag}' does not match ${FORK_TAG_PATTERN}."
+            exit 1
+          fi
+
+          # Fork Build Image only publishes a release tag whose server/package.json carries the tag's
+          # version. The default branch follows upstream's version, so it is normally not taggable.
+          package_version=$(git show "${DEFAULT_BRANCH_SHA}:server/package.json" | jq -r '.version // empty' | head -n 1 || true)
+          package_version=$(tr -cd 'A-Za-z0-9.+-' <<< "$package_version" | cut -c 1-64)
+          if [[ "$package_version" != "${fork_tag#v}" ]]; then
+            echo "::warning::Not tagging ${fork_tag}: server/package.json at ${DEFAULT_BRANCH_SHA::9} reads '${package_version}', not '${fork_tag#v}'."
+            {
+              echo "state=blocked"
+              echo "upstream-release=${upstream_release}"
+              echo "blocked-tag=${fork_tag}"
+              echo "blocked-version=${package_version}"
+              echo "upstream-release-sha=${release_sha}"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           {
+            echo "state=taggable"
             echo "upstream-release=${upstream_release}"
-            echo "fork-tag=${upstream_release}-fork.$((${last_build_number:-0} + 1))"
+            echo "fork-tag=${fork_tag}"
           } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Report a fork release that needs a version bump
+        if: ${{ steps.release.outputs.state == 'blocked' }}
+        env:
+          HAS_ISSUES: ${{ steps.fork.outputs.has-issues }}
+          UPSTREAM_RELEASE: ${{ steps.release.outputs.upstream-release }}
+          UPSTREAM_RELEASE_SHA: ${{ steps.release.outputs.upstream-release-sha }}
+          BLOCKED_TAG: ${{ steps.release.outputs.blocked-tag }}
+          BLOCKED_VERSION: ${{ steps.release.outputs.blocked-version }}
+          DEFAULT_BRANCH: ${{ steps.fork.outputs.default-branch }}
+        run: |
+          issue_body="${RUNNER_TEMP}/release-blocked-issue.md"
+          {
+            echo "Upstream released [${UPSTREAM_RELEASE}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${UPSTREAM_RELEASE}) and the fork default branch contains it, but the fork release \`${BLOCKED_TAG}\` was not tagged."
+            echo
+            echo "Fork Build Image publishes a release tag only when \`server/package.json\` at the tagged commit reads the tag's version, so the image tag, its labels, the About page and the source agree. On the default branch it reads \`${BLOCKED_VERSION:-nothing}\`, not \`${BLOCKED_TAG#v}\`."
+            echo
+            echo "To cut the release by hand:"
+            echo
+            echo "1. Create the release branch from upstream's tag (\`${UPSTREAM_RELEASE_SHA}\`) and bring the fork's changes onto it, as for earlier stable branches: \`git switch -c fork/${UPSTREAM_RELEASE} ${UPSTREAM_RELEASE}\`."
+            echo "2. Set \`\"version\": \"${BLOCKED_TAG#v}\"\` in \`server/package.json\` and commit it."
+            echo "3. Push the branch: \`git push origin fork/${UPSTREAM_RELEASE}\`."
+            echo "4. Tag that commit and push only the tag: \`git tag -a ${BLOCKED_TAG} -m \"Upstream ${UPSTREAM_RELEASE} with fork changes\"\` then \`git push origin refs/tags/${BLOCKED_TAG}\`."
+            echo "5. Build and release it: \`gh workflow run fork-build-image.yml --repo ${REPOSITORY} --ref ${DEFAULT_BRANCH} -f ref=${BLOCKED_TAG}\`."
+            echo
+            echo "This issue is closed automatically by the next sync run that finds a fork tag for ${UPSTREAM_RELEASE}."
+          } > "$issue_body"
+          cat "$issue_body" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$HAS_ISSUES" != true ]]; then
+            echo "::warning::Issues are disabled in ${REPOSITORY}; the release instructions are in the run summary."
+            exit 0
+          fi
+
+          gh label create "$RELEASE_BLOCKED_LABEL" --repo "$REPOSITORY" --force \
+            --color FBCA04 --description "An upstream release waits for a fork release tag with a bumped version"
+
+          issue_number=$(gh issue list --repo "$REPOSITORY" --state open --label "$RELEASE_BLOCKED_LABEL" \
+            --json number --jq '.[0].number // empty')
+          if [[ -z "$issue_number" ]]; then
+            gh issue create --repo "$REPOSITORY" --label "$RELEASE_BLOCKED_LABEL" \
+              --title "Fork release ${BLOCKED_TAG} needs a version bump" --body-file "$issue_body"
+            exit 0
+          fi
+
+          current_issue_body=$(gh issue view "$issue_number" --repo "$REPOSITORY" --json body --jq .body)
+          if [[ "$current_issue_body" == "$(cat "$issue_body")" ]]; then
+            echo "Issue ${issue_number} already describes ${BLOCKED_TAG}."
+          else
+            gh issue edit "$issue_number" --repo "$REPOSITORY" \
+              --title "Fork release ${BLOCKED_TAG} needs a version bump" --body-file "$issue_body"
+            gh issue comment "$issue_number" --repo "$REPOSITORY" \
+              --body "The description is updated for \`${BLOCKED_TAG}\`. Run: ${RUN_URL}"
+          fi
+
+      - name: Close the fork release issue
+        if: ${{ steps.fork.outputs.has-issues == 'true' && (steps.release.outputs.state == 'covered' || steps.release.outputs.state == 'not-contained' || steps.release.outputs.state == 'taggable') }}
+        env:
+          RELEASE_STATE: ${{ steps.release.outputs.state }}
+        run: |
+          case "$RELEASE_STATE" in
+            covered) comment="A fork release tag now covers the latest upstream release." ;;
+            taggable) comment="The default branch now carries the fork release version, so the release job can tag it." ;;
+            not-contained) comment="The latest upstream release is not in the default branch, so no fork release is waiting for a tag here. A stable release from an upstream release branch is cut by hand." ;;
+            *) exit 0 ;;
+          esac
+          gh issue list --repo "$REPOSITORY" --state open --label "$RELEASE_BLOCKED_LABEL" --json number --jq '.[].number' |
+            while IFS= read -r issue_number; do
+              gh issue close "$issue_number" --repo "$REPOSITORY" --comment "${comment} Run: ${RUN_URL}"
+            done
 
       - name: Plan the regression and mutation gate
         id: gate
@@ -919,6 +1022,16 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if [[ ! "$FORK_TAG" =~ $FORK_TAG_PATTERN ]]; then
+            echo "::error::Refusing to tag '${FORK_TAG}': it does not match ${FORK_TAG_PATTERN}."
+            exit 1
+          fi
+          package_version=$(jq -r '.version // empty' server/package.json)
+          if [[ "$package_version" != "${FORK_TAG#v}" ]]; then
+            echo "::error::Refusing to tag ${FORK_TAG}: server/package.json at ${DEFAULT_BRANCH_SHA} reads '${package_version}', not '${FORK_TAG#v}'. Fork Build Image would refuse the tag."
+            exit 1
+          fi
 
           if git ls-remote --exit-code --tags origin "refs/tags/${FORK_TAG}" > /dev/null; then
             echo "Tag ${FORK_TAG} already exists."
